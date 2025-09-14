@@ -1,0 +1,85 @@
+# Prometheus configuration for Claude Code Proxy monitoring
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    service: 'ccproxy'
+    environment: 'production'
+
+# Alertmanager configuration (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - alertmanager:9093
+
+# Rule files (optional - for alerting rules)
+# rule_files:
+#   - "alert_rules.yml"
+
+scrape_configs:
+  # Claude Code Proxy metrics
+  - job_name: 'ccproxy'
+    static_configs:
+      - targets: ['ccproxy:8001']  # Metrics endpoint
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    honor_labels: false
+
+    # Additional labels
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'ccproxy-server'
+
+    # Metric relabeling (optional)
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'ccproxy_.*'
+        action: keep
+
+  # Proxy health endpoint
+  - job_name: 'ccproxy-health'
+    static_configs:
+      - targets: ['ccproxy:8000']
+    metrics_path: '/health'
+    scrape_interval: 30s
+    scrape_timeout: 5s
+
+  # Redis metrics (if enabled)
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+
+  # Self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+# Storage configuration
+storage:
+  tsdb:
+    path: /prometheus
+    retention.time: 15d
+    retention.size: 1GB
+
+# Web configuration
+web:
+  console.libraries: /etc/prometheus/console_libraries
+  console.templates: /etc/prometheus/consoles
+  enable-lifecycle: true
+
+# Remote write configuration (optional - for long-term storage)
+# remote_write:
+#   - url: "http://your-remote-storage/api/v1/write"
+#     write_relabel_configs:
+#       - source_labels: [__name__]
+#         regex: 'ccproxy_.*'
+#         action: keep

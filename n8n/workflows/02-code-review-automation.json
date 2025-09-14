@@ -1,0 +1,202 @@
+{
+  "name": "Code Review Automation - Git Hooks & AI Analysis",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "github-webhook",
+        "options": {}
+      },
+      "id": "github-webhook",
+      "name": "GitHub Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        260,
+        300
+      ],
+      "webhookId": "github-webhook-code-review"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.body.action }}",
+              "rightValue": "opened",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "leftValue": "={{ $json.body.action }}",
+              "rightValue": "synchronize",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        }
+      },
+      "id": "filter-pr-events",
+      "name": "Filter PR Events",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract PR information from GitHub webhook\nconst payload = $json.body;\n\nif (!payload.pull_request) {\n  throw new Error('Not a pull request event');\n}\n\nconst pr = payload.pull_request;\nconst repo = payload.repository;\n\nreturn {\n  action: payload.action,\n  prNumber: pr.number,\n  prTitle: pr.title,\n  prBody: pr.body || '',\n  prAuthor: pr.user.login,\n  prUrl: pr.html_url,\n  baseBranch: pr.base.ref,\n  headBranch: pr.head.ref,\n  headSha: pr.head.sha,\n  repoName: repo.name,\n  repoFullName: repo.full_name,\n  repoOwner: repo.owner.login,\n  changedFiles: pr.changed_files,\n  additions: pr.additions,\n  deletions: pr.deletions,\n  createdAt: pr.created_at,\n  updatedAt: pr.updated_at\n};"
+      },
+      "id": "extract-pr-info",
+      "name": "Extract PR Information",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $json.repoFullName }}/pulls/{{ $json.prNumber }}/files",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "get-pr-files",
+      "name": "Get PR Files",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        920,
+        200
+      ],
+      "credentials": {
+        "githubApi": {
+          "id": "github-api-creds",
+          "name": "GitHub API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $node[\"Extract PR Information\"].json.repoFullName }}/pulls/{{ $node[\"Extract PR Information\"].json.prNumber }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "get-pr-details",
+      "name": "Get PR Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        920,
+        400
+      ],
+      "credentials": {
+        "githubApi": {
+          "id": "github-api-creds",
+          "name": "GitHub API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process PR files and prepare for AI analysis\nconst prInfo = $node[\"Extract PR Information\"].json;\nconst prFiles = $node[\"Get PR Files\"].json;\nconst prDetails = $node[\"Get PR Details\"].json;\n\n// Filter relevant files (exclude certain file types)\nconst excludeExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.pdf', '.zip', '.tar.gz'];\nconst excludePaths = ['node_modules/', 'dist/', 'build/', '.git/', 'coverage/', '__pycache__/'];\n\nconst relevantFiles = prFiles.filter(file => {\n  const filename = file.filename.toLowerCase();\n  const hasExcludedExt = excludeExtensions.some(ext => filename.endsWith(ext));\n  const hasExcludedPath = excludePaths.some(path => filename.includes(path));\n  return !hasExcludedExt && !hasExcludedPath && file.status !== 'removed';\n});\n\n// Categorize files by type\nconst fileCategories = {\n  code: [],\n  config: [],\n  docs: [],\n  tests: []\n};\n\nrelevantFiles.forEach(file => {\n  const filename = file.filename.toLowerCase();\n  \n  if (filename.includes('test') || filename.includes('spec') || filename.endsWith('.test.js') || filename.endsWith('.spec.ts')) {\n    fileCategories.tests.push(file);\n  } else if (filename.endsWith('.md') || filename.endsWith('.rst') || filename.endsWith('.txt')) {\n    fileCategories.docs.push(file);\n  } else if (filename.includes('config') || filename.endsWith('.json') || filename.endsWith('.yml') || filename.endsWith('.yaml') || filename.endsWith('.toml')) {\n    fileCategories.config.push(file);\n  } else {\n    fileCategories.code.push(file);\n  }\n});\n\n// Calculate complexity metrics\nconst complexityMetrics = {\n  totalFiles: relevantFiles.length,\n  codeFiles: fileCategories.code.length,\n  testFiles: fileCategories.tests.length,\n  configFiles: fileCategories.config.length,\n  docFiles: fileCategories.docs.length,\n  totalAdditions: prInfo.additions,\n  totalDeletions: prInfo.deletions,\n  netChanges: prInfo.additions - prInfo.deletions\n};\n\n// Determine review priority\nlet priority = 'medium';\nif (complexityMetrics.totalFiles > 20 || complexityMetrics.totalAdditions > 500) {\n  priority = 'high';\n} else if (complexityMetrics.totalFiles < 5 && complexityMetrics.totalAdditions < 100) {\n  priority = 'low';\n}\n\n// Create file summary for AI analysis\nconst fileSummary = relevantFiles.slice(0, 15).map(file => ({\n  filename: file.filename,\n  status: file.status,\n  additions: file.additions,\n  deletions: file.deletions,\n  changes: file.changes,\n  patch: file.patch ? file.patch.substring(0, 1000) + (file.patch.length > 1000 ? '...' : '') : null\n}));\n\nreturn {\n  prInfo,\n  prDetails: {\n    mergeable: prDetails.mergeable,\n    mergeable_state: prDetails.mergeable_state,\n    draft: prDetails.draft,\n    labels: prDetails.labels?.map(l => l.name) || []\n  },\n  fileCategories,\n  complexityMetrics,\n  priority,\n  fileSummary,\n  analysisContext: {\n    repository: prInfo.repoName,\n    language: prDetails.base?.repo?.language || 'Unknown',\n    hasTests: fileCategories.tests.length > 0,\n    hasDocs: fileCategories.docs.length > 0\n  }\n};"
+      },
+      "id": "process-pr-data",
+      "name": "Process PR Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CLAUDE_PROXY_URL }}/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-3-sonnet-20240229\",\n  max_tokens: 3000,\n  messages: [{\n    role: \"user\",\n    content: `You are a senior software engineer conducting a thorough code review. Analyze this pull request and provide comprehensive feedback.\n\n**Pull Request Information:**\n- Title: ${$json.prInfo.prTitle}\n- Author: ${$json.prInfo.prAuthor}\n- Repository: ${$json.prInfo.repoFullName}\n- Language: ${$json.analysisContext.language}\n- Priority: ${$json.priority}\n- Branch: ${$json.prInfo.headBranch} → ${$json.prInfo.baseBranch}\n\n**Complexity Metrics:**\n- Total Files: ${$json.complexityMetrics.totalFiles}\n- Code Files: ${$json.complexityMetrics.codeFiles}\n- Test Files: ${$json.complexityMetrics.testFiles}\n- Additions: ${$json.complexityMetrics.totalAdditions}\n- Deletions: ${$json.complexityMetrics.totalDeletions}\n- Has Tests: ${$json.analysisContext.hasTests}\n- Has Documentation: ${$json.analysisContext.hasDocs}\n\n**File Changes:**\n${$json.fileSummary.map(file => \n  `**${file.filename}** (${file.status})\n  +${file.additions} -${file.deletions}\n  \\`\\`\\`\n  ${file.patch || 'No patch available'}\n  \\`\\`\\`\n  ---`\n).join('\\n')}\n\n**Description:**\n${$json.prInfo.prBody}\n\nProvide a structured code review with:\n\n1. **🔍 Overview Assessment**\n   - Summary of changes\n   - Overall complexity rating\n   - Alignment with PR description\n\n2. **✅ Strengths**\n   - Well-implemented features\n   - Good practices observed\n   - Positive aspects\n\n3. **⚠️ Issues & Concerns**\n   - Code quality issues\n   - Potential bugs or security vulnerabilities\n   - Performance concerns\n   - Missing error handling\n\n4. **🧪 Testing & Quality**\n   - Test coverage assessment\n   - Missing test scenarios\n   - Quality assurance recommendations\n\n5. **📚 Documentation**\n   - Documentation completeness\n   - Code comments quality\n   - README or API doc updates needed\n\n6. **🛡️ Security & Best Practices**\n   - Security implications\n   - Coding standards compliance\n   - Architecture considerations\n\n7. **🎯 Action Items**\n   - Required changes (blocking)\n   - Suggested improvements (non-blocking)\n   - Follow-up tasks\n\n8. **📊 Recommendation**\n   - Approve / Request Changes / Comment\n   - Confidence level (High/Medium/Low)\n   - Priority for review by human\n\nBe specific, constructive, and provide actionable feedback. Focus on maintainability, security, and code quality.`\n  }]\n}) }}"
+      },
+      "id": "claude-code-review",
+      "name": "Claude Code Review",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1360,
+        300
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "claude-api-creds",
+          "name": "Claude API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format Claude's review for GitHub comment\nconst claudeResponse = $json.content[0].text;\nconst prInfo = $node[\"Process PR Data\"].json.prInfo;\nconst metrics = $node[\"Process PR Data\"].json.complexityMetrics;\n\n// Determine review status based on Claude's recommendation\nconst reviewText = claudeResponse.toLowerCase();\nlet reviewStatus = 'COMMENT';\nlet requiresChanges = false;\n\nif (reviewText.includes('approve') && !reviewText.includes('request changes')) {\n  reviewStatus = 'APPROVE';\n} else if (reviewText.includes('request changes') || reviewText.includes('blocking')) {\n  reviewStatus = 'REQUEST_CHANGES';\n  requiresChanges = true;\n}\n\n// Format the GitHub comment\nconst githubComment = `## 🤖 AI Code Review\n\n> **Automated review by Claude AI** | PR #${prInfo.prNumber} | ${new Date().toLocaleString()}\n\n### 📊 Quick Stats\n- **Files Changed:** ${metrics.totalFiles}\n- **Lines Added:** +${metrics.totalAdditions}\n- **Lines Deleted:** -${metrics.totalDeletions}\n- **Priority:** ${$node[\"Process PR Data\"].json.priority.toUpperCase()}\n- **Has Tests:** ${$node[\"Process PR Data\"].json.analysisContext.hasTests ? '✅' : '❌'}\n\n---\n\n${claudeResponse}\n\n---\n\n<details>\n<summary>🔧 Review Configuration</summary>\n\n- **Model:** Claude 3 Sonnet\n- **Analysis Depth:** Comprehensive\n- **Security Scanning:** Enabled\n- **Best Practices Check:** Enabled\n\nThis review was automatically generated. Please consider having a human reviewer also examine this PR, especially for:\n- Complex business logic\n- Security-sensitive changes\n- Architecture decisions\n- Performance-critical code\n\n</details>\n\n*Generated by n8n AI Automation*`;\n\n// Create labels based on review\nconst suggestedLabels = [];\nif (requiresChanges) {\n  suggestedLabels.push('needs-changes');\n}\nif (metrics.totalFiles > 10) {\n  suggestedLabels.push('large-pr');\n}\nif (!$node[\"Process PR Data\"].json.analysisContext.hasTests) {\n  suggestedLabels.push('needs-tests');\n}\nif ($node[\"Process PR Data\"].json.priority === 'high') {\n  suggestedLabels.push('high-priority');\n}\n\n// Determine if human review is needed\nconst needsHumanReview = \n  requiresChanges || \n  metrics.totalFiles > 15 || \n  metrics.totalAdditions > 300 ||\n  reviewText.includes('security') ||\n  reviewText.includes('performance') ||\n  $node[\"Process PR Data\"].json.priority === 'high';\n\nreturn {\n  prInfo,\n  reviewStatus,\n  requiresChanges,\n  githubComment,\n  suggestedLabels,\n  needsHumanReview,\n  reviewSummary: {\n    recommendation: reviewStatus,\n    confidence: reviewText.includes('high confidence') ? 'high' : reviewText.includes('low confidence') ? 'low' : 'medium',\n    keyIssues: metrics.totalFiles,\n    testCoverage: $node[\"Process PR Data\"].json.analysisContext.hasTests,\n    securityConcerns: reviewText.includes('security')\n  }\n};"
+      },
+      "id": "format-review",
+      "name": "Format Review Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",\n        "method": "POST",\n        "url": "=https://api.github.com/repos/{{ $json.prInfo.repoFullName }}/issues/{{ $json.prInfo.prNumber }}/comments",\n        "sendBody": true,\n        "bodyParameters": {\n          "parameters": []\n        },\n        "jsonBody": "={{ JSON.stringify({\n  body: $json.githubComment\n}) }}",\n        "options": {\n          "response": {\n            "response": {\n              "fullResponse": false,\n              "responseFormat": "json"\n            }\n          }\n        }\n      },\n      "id": "post-github-comment",\n      "name": "Post GitHub Comment",\n      "type": "n8n-nodes-base.httpRequest",\n      "typeVersion": 4.1,\n      "position": [\n        1800,\n        200\n      ],\n      "credentials": {\n        "githubApi": {\n          "id": "github-api-creds",\n          "name": "GitHub API Credentials"\n        }\n      }\n    },\n    {\n      "parameters": {\n        "conditions": {\n          "options": {\n            "caseSensitive": true,\n            "leftValue": "",\n            "typeValidation": "strict"\n          },\n          "conditions": [\n            {\n              "leftValue": "={{ $json.suggestedLabels.length }}",\n              "rightValue": 0,\n              "operator": {\n                "type": "number",\n                "operation": "gt"\n              }\n            }\n          ],\n          "combinator": "and"\n        }\n      },\n      "id": "check-labels",\n      "name": "Should Add Labels?",\n      "type": "n8n-nodes-base.if",\n      "typeVersion": 2,\n      "position": [\n        1800,\n        400\n      ]\n    },\n    {\n      "parameters": {\n        "authentication": "predefinedCredentialType",\n        "nodeCredentialType": "githubApi",\n        "method": "POST",\n        "url": "=https://api.github.com/repos/{{ $node[\"Format Review Output\"].json.prInfo.repoFullName }}/issues/{{ $node[\"Format Review Output\"].json.prInfo.prNumber }}/labels",\n        "sendBody": true,\n        "bodyParameters": {\n          "parameters": []\n        },\n        "jsonBody": "={{ JSON.stringify({\n  labels: $node[\"Format Review Output\"].json.suggestedLabels\n}) }}",\n        "options": {\n          "response": {\n            "response": {\n              "fullResponse": false,\n              "responseFormat": "json"\n            }\n          }\n        }\n      },\n      "id": "add-github-labels",\n      "name": "Add GitHub Labels",\n      "type": "n8n-nodes-base.httpRequest",\n      "typeVersion": 4.1,\n      "position": [\n        2020,\n        400\n      ],\n      "credentials": {\n        "githubApi": {\n          "id": "github-api-creds",\n          "name": "GitHub API Credentials"\n        }\n      }\n    },\n    {\n      "parameters": {\n        "conditions": {\n          "options": {\n            "caseSensitive": true,\n            "leftValue": "",\n            "typeValidation": "strict"\n          },\n          "conditions": [\n            {\n              "leftValue": "={{ $json.needsHumanReview }}",\n              "rightValue": true,\n              "operator": {\n                "type": "boolean",\n                "operation": "equal"\n              }\n            }\n          ],\n          "combinator": "and"\n        }\n      },\n      "id": "check-human-review",\n      "name": "Needs Human Review?",\n      "type": "n8n-nodes-base.if",\n      "typeVersion": 2,\n      "position": [\n        1800,\n        600\n      ]\n    },\n    {\n      "parameters": {\n        "method": "POST",\n        "url": "={{ $env.SLACK_WEBHOOK_URL }}",\n        "sendBody": true,\n        "bodyParameters": {\n          "parameters": []\n        },\n        "jsonBody": "={{ JSON.stringify({\n  text: `🔍 Code Review Alert`,\n  blocks: [\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*PR Requires Human Review*\\n\\n*Repository:* ${$node[\"Format Review Output\"].json.prInfo.repoFullName}\\n*PR #${$node[\"Format Review Output\"].json.prInfo.prNumber}:* ${$node[\"Format Review Output\"].json.prInfo.prTitle}\\n*Author:* ${$node[\"Format Review Output\"].json.prInfo.prAuthor}\\n*Priority:* ${$node[\"Process PR Data\"].json.priority.toUpperCase()}\\n*Status:* ${$node[\"Format Review Output\"].json.reviewStatus}`\n      },\n      accessory: {\n        type: 'button',\n        text: {\n          type: 'plain_text',\n          text: 'View PR'\n        },\n        url: $node[\"Format Review Output\"].json.prInfo.prUrl\n      }\n    },\n    {\n      type: 'section',\n      fields: [\n        {\n          type: 'mrkdwn',\n          text: `*Files:* ${$node[\"Process PR Data\"].json.complexityMetrics.totalFiles}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Changes:* +${$node[\"Process PR Data\"].json.complexityMetrics.totalAdditions} -${$node[\"Process PR Data\"].json.complexityMetrics.totalDeletions}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Tests:* ${$node[\"Process PR Data\"].json.analysisContext.hasTests ? '✅' : '❌'}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*AI Confidence:* ${$node[\"Format Review Output\"].json.reviewSummary.confidence}`\n        }\n      ]\n    }\n  ]\n}) }}"
+      },\n      "id": "notify-human-review",\n      "name": "Notify Human Review Needed",\n      "type": "n8n-nodes-base.httpRequest",\n      "typeVersion": 4.1,\n      "position": [\n        2020,\n        600\n      ]\n    },\n    {\n      "parameters": {\n        "operation": "executeQuery",\n        "query": "INSERT INTO ai_interaction_logs (workflow_id, ai_service, response_time, created_at) VALUES ('code-review-automation', 'claude-3-sonnet', {{ $execution.duration }}, NOW());",\n        "additionalFields": {}\n      },\n      "id": "log-ai-metrics",\n      "name": "Log AI Interaction",\n      "type": "n8n-nodes-base.postgres",\n      "typeVersion": 2.4,\n      "position": [\n        2240,\n        300\n      ],\n      "credentials": {\n        "postgres": {\n          "id": "postgres-creds",\n          "name": "PostgreSQL Credentials"\n        }\n      }\n    },\n    {\n      "parameters": {\n        "conditions": {\n          "options": {\n            "caseSensitive": true,\n            "leftValue": "",\n            "typeValidation": "strict"\n          },\n          "conditions": [\n            {\n              "leftValue": "={{ $json.error }}",\n              "rightValue": "",\n              "operator": {\n                "type": "string",\n                "operation": "exists"\n              }\n            }\n          ],\n          "combinator": "and"\n        }\n      },\n      "id": "error-handler",\n      "name": "Error Handler",\n      "type": "n8n-nodes-base.if",\n      "typeVersion": 2,\n      "position": [\n        480,\n        500\n      ]\n    },\n    {\n      "parameters": {\n        "method": "POST",\n        "url": "={{ $env.SLACK_WEBHOOK_URL }}",\n        "sendBody": true,\n        "bodyParameters": {\n          "parameters": []\n        },\n        "jsonBody": "={{ JSON.stringify({\n  text: `❌ Code Review Workflow Failed`,\n  blocks: [{\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: `*Code Review Automation Failed*\\n\\n*Error:* ${$json.error || 'Unknown error'}\\n*Time:* ${new Date().toLocaleString()}\\n*Execution ID:* ${$execution.id}\\n*Repository:* ${$json.body?.repository?.full_name || 'Unknown'}`\n    }\n  }]\n}) }}"
+      },\n      "id": "send-error-alert",\n      "name": "Send Error Alert",\n      "type": "n8n-nodes-base.httpRequest",\n      "typeVersion": 4.1,\n      "position": [\n        700,\n        600\n      ]\n    }\n  ],\n  "pinData": {},\n  "connections": {\n    "GitHub Webhook Trigger": {\n      "main": [\n        [\n          {\n            "node": "Filter PR Events",\n            "type": "main",\n            "index": 0\n          },\n          {\n            "node": "Error Handler",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Filter PR Events": {\n      "main": [\n        [\n          {\n            "node": "Extract PR Information",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Extract PR Information": {\n      "main": [\n        [\n          {\n            "node": "Get PR Files",\n            "type": "main",\n            "index": 0\n          },\n          {\n            "node": "Get PR Details",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Get PR Files": {\n      "main": [\n        [\n          {\n            "node": "Process PR Data",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Get PR Details": {\n      "main": [\n        [\n          {\n            "node": "Process PR Data",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Process PR Data": {\n      "main": [\n        [\n          {\n            "node": "Claude Code Review",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Claude Code Review": {\n      "main": [\n        [\n          {\n            "node": "Format Review Output",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Format Review Output": {\n      "main": [\n        [\n          {\n            "node": "Post GitHub Comment",\n            "type": "main",\n            "index": 0\n          },\n          {\n            "node": "Should Add Labels?",\n            "type": "main",\n            "index": 0\n          },\n          {\n            "node": "Needs Human Review?",\n            "type": "main",\n            "index": 0\n          },\n          {\n            "node": "Log AI Interaction",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Should Add Labels?": {\n      "main": [\n        [\n          {\n            "node": "Add GitHub Labels",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Needs Human Review?": {\n      "main": [\n        [\n          {\n            "node": "Notify Human Review Needed",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Error Handler": {\n      "main": [\n        [\n          {\n            "node": "Send Error Alert",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    }\n  },\n  "active": true,\n  "settings": {\n    "executionOrder": "v1"\n  },\n  "versionId": "1",\n  "meta": {\n    "templateCredsSetupCompleted": true\n  },\n  "id": "code-review-automation-workflow",\n  "tags": [\n    {\n      "createdAt": "2024-01-01T00:00:00.000Z",\n      "updatedAt": "2024-01-01T00:00:00.000Z",\n      "id": "ai-workflows",\n      "name": "AI Workflows"\n    },\n    {\n      "createdAt": "2024-01-01T00:00:00.000Z",\n      "updatedAt": "2024-01-01T00:00:00.000Z",\n      "id": "github-integration",\n      "name": "GitHub Integration"\n    }\n  ]\n}

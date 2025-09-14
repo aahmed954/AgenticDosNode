@@ -1,0 +1,134 @@
+{
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["tag:ai-controller"],
+      "dst": [
+        "tag:ai-worker:443",
+        "tag:ai-worker:8080",
+        "tag:ai-worker:5678",
+        "tag:vector-db:19530"
+      ],
+      "comment": "Controller can access worker services"
+    },
+    {
+      "action": "accept",
+      "src": ["tag:monitoring"],
+      "dst": [
+        "tag:ai-worker:9090",
+        "tag:ai-controller:9090",
+        "tag:ai-worker:3000"
+      ],
+      "comment": "Monitoring access to metrics"
+    },
+    {
+      "action": "accept",
+      "src": ["tag:admin"],
+      "dst": ["*:*"],
+      "comment": "Admin full access"
+    },
+    {
+      "action": "accept",
+      "src": ["tag:ai-worker"],
+      "dst": ["tag:ai-controller:443"],
+      "comment": "Worker callback to controller"
+    },
+    {
+      "action": "drop",
+      "src": ["*"],
+      "dst": ["*:*"],
+      "comment": "Default deny all"
+    }
+  ],
+  "tagOwners": {
+    "tag:ai-controller": ["security@yourdomain.com"],
+    "tag:ai-worker": ["security@yourdomain.com"],
+    "tag:vector-db": ["security@yourdomain.com"],
+    "tag:monitoring": ["ops@yourdomain.com"],
+    "tag:admin": ["admin@yourdomain.com"]
+  },
+  "nodeAttrs": [
+    {
+      "target": ["tag:ai-worker"],
+      "attr": ["funnel"],
+      "value": false
+    },
+    {
+      "target": ["tag:ai-controller"],
+      "attr": ["funnel"],
+      "value": false
+    }
+  ],
+  "ssh": [
+    {
+      "action": "accept",
+      "src": ["tag:admin"],
+      "dst": ["tag:ai-worker", "tag:ai-controller"],
+      "users": ["root", "aiuser"],
+      "comment": "Admin SSH access"
+    },
+    {
+      "action": "check",
+      "src": ["tag:monitoring"],
+      "dst": ["tag:ai-worker", "tag:ai-controller"],
+      "users": ["monitoring"],
+      "checkPeriod": "24h",
+      "comment": "Monitoring SSH with MFA"
+    }
+  ],
+  "tests": [
+    {
+      "src": "tag:ai-controller",
+      "accept": ["tag:ai-worker:443"],
+      "comment": "Controller should access worker HTTPS"
+    },
+    {
+      "src": "tag:ai-worker",
+      "accept": ["tag:ai-controller:443"],
+      "comment": "Worker should callback to controller"
+    },
+    {
+      "src": "tag:monitoring",
+      "accept": ["tag:ai-worker:9090"],
+      "comment": "Monitoring should access metrics"
+    },
+    {
+      "src": "autogroup:member",
+      "deny": ["tag:ai-worker:22"],
+      "comment": "Regular members should not SSH"
+    }
+  ],
+  "autoApprovers": {
+    "routes": {
+      "10.0.0.0/8": ["admin@yourdomain.com"],
+      "192.168.0.0/16": ["admin@yourdomain.com"]
+    },
+    "exitNode": ["admin@yourdomain.com"]
+  },
+  "groups": {
+    "group:admins": ["admin@yourdomain.com"],
+    "group:security": ["security@yourdomain.com"],
+    "group:ops": ["ops@yourdomain.com"]
+  },
+  "postures": {
+    "posture:secureOS": {
+      "linux": {
+        "minKernelVersion": "5.15",
+        "distros": ["ubuntu", "debian"],
+        "requiresFirewall": true
+      }
+    },
+    "posture:latestUpdates": {
+      "linux": {
+        "packageManager": "apt",
+        "maxDaysSinceUpdate": 7
+      }
+    }
+  },
+  "nodePostures": [
+    {
+      "target": ["tag:ai-worker", "tag:ai-controller"],
+      "postures": ["posture:secureOS", "posture:latestUpdates"]
+    }
+  ]
+}

@@ -1,0 +1,669 @@
+{
+  "name": "GitHub Integrations - Issues, PRs & Repository Management",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "github-issues",
+        "options": {}
+      },
+      "id": "github-issue-webhook",
+      "name": "GitHub Issue Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        260,
+        200
+      ],
+      "webhookId": "github-issues-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.body.action }}",
+              "rightValue": "opened",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "is-new-issue",
+      "name": "Is New Issue?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        480,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CLAUDE_PROXY_URL }}/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-3-haiku-20240307\",\n  max_tokens: 1000,\n  messages: [{\n    role: \"user\",\n    content: `Analyze this GitHub issue and provide structured information:\n\n**Issue Title:** ${$json.body.issue.title}\n**Author:** ${$json.body.issue.user.login}\n**Repository:** ${$json.body.repository.full_name}\n**Labels:** ${($json.body.issue.labels || []).map(l => l.name).join(', ') || 'None'}\n\n**Issue Body:**\n${$json.body.issue.body || 'No description provided'}\n\nProvide analysis in this format:\n\n1. **Issue Type**: bug/feature/question/documentation/other\n2. **Priority**: critical/high/medium/low\n3. **Complexity**: simple/moderate/complex\n4. **Category**: frontend/backend/infrastructure/documentation/other\n5. **Estimated Effort**: 1-5 scale\n6. **Suggested Labels**: comma-separated list\n7. **Auto-Response**: brief helpful response or acknowledgment\n8. **Similar Issues**: potential duplicate detection\n9. **Next Steps**: recommended actions\n\nBe concise and focus on actionable insights.`\n  }]\n}) }}"
+      },
+      "id": "analyze-issue-with-ai",
+      "name": "Analyze Issue with AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        700,
+        100
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "claude-api-creds",
+          "name": "Claude API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI analysis and extract structured data\nconst aiAnalysis = $json.content[0].text;\nconst issue = $node[\"GitHub Issue Webhook\"].json.body.issue;\nconst repository = $node[\"GitHub Issue Webhook\"].json.body.repository;\n\n// Simple parsing of AI response (would be more sophisticated in production)\nconst analysis = {\n  issueType: 'other',\n  priority: 'medium',\n  complexity: 'moderate',\n  category: 'other',\n  effort: 3,\n  suggestedLabels: [],\n  autoResponse: '',\n  similarIssues: [],\n  nextSteps: []\n};\n\n// Extract information from AI response\ntry {\n  const lines = aiAnalysis.split('\\n');\n  lines.forEach(line => {\n    const trimmed = line.trim();\n    if (trimmed.includes('Issue Type:')) {\n      analysis.issueType = trimmed.split(':')[1]?.trim().toLowerCase() || 'other';\n    } else if (trimmed.includes('Priority:')) {\n      analysis.priority = trimmed.split(':')[1]?.trim().toLowerCase() || 'medium';\n    } else if (trimmed.includes('Complexity:')) {\n      analysis.complexity = trimmed.split(':')[1]?.trim().toLowerCase() || 'moderate';\n    } else if (trimmed.includes('Category:')) {\n      analysis.category = trimmed.split(':')[1]?.trim().toLowerCase() || 'other';\n    } else if (trimmed.includes('Estimated Effort:')) {\n      const effort = trimmed.split(':')[1]?.trim();\n      analysis.effort = parseInt(effort?.charAt(0)) || 3;\n    } else if (trimmed.includes('Suggested Labels:')) {\n      const labels = trimmed.split(':')[1]?.trim();\n      analysis.suggestedLabels = labels ? labels.split(',').map(l => l.trim()) : [];\n    } else if (trimmed.includes('Auto-Response:')) {\n      analysis.autoResponse = trimmed.split(':')[1]?.trim() || '';\n    }\n  });\n} catch (error) {\n  console.warn('Could not parse AI analysis fully:', error.message);\n}\n\n// Generate comprehensive issue metadata\nconst issueMetadata = {\n  issueNumber: issue.number,\n  title: issue.title,\n  author: issue.user.login,\n  repository: repository.full_name,\n  url: issue.html_url,\n  createdAt: issue.created_at,\n  existingLabels: (issue.labels || []).map(l => l.name),\n  analysis,\n  recommendations: {\n    shouldAutoLabel: analysis.suggestedLabels.length > 0,\n    shouldAutoAssign: analysis.priority === 'critical' || analysis.complexity === 'simple',\n    shouldAutoRespond: analysis.autoResponse.length > 0,\n    needsTriaging: analysis.priority === 'critical' || analysis.issueType === 'bug'\n  },\n  rawAnalysis: aiAnalysis\n};\n\nreturn issueMetadata;"
+      },
+      "id": "process-issue-analysis",
+      "name": "Process Issue Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.recommendations.shouldAutoLabel }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "should-auto-label",
+      "name": "Should Auto-Label?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        50
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "method": "POST",
+        "url": "=https://api.github.com/repos/{{ $json.repository }}/issues/{{ $json.issueNumber }}/labels",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  labels: $json.analysis.suggestedLabels\n}) }}",
+        "options": {}
+      },
+      "id": "add-labels",
+      "name": "Add AI-Suggested Labels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1360,
+        50
+      ],
+      "credentials": {
+        "githubApi": {
+          "id": "github-api-creds",
+          "name": "GitHub API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.recommendations.shouldAutoRespond }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "should-auto-respond",
+      "name": "Should Auto-Respond?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "method": "POST",
+        "url": "=https://api.github.com/repos/{{ $json.repository }}/issues/{{ $json.issueNumber }}/comments",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  body: `👋 Thank you for opening this issue!\\n\\n${$json.analysis.autoResponse}\\n\\n**AI Analysis:**\\n- Type: ${$json.analysis.issueType}\\n- Priority: ${$json.analysis.priority}\\n- Estimated Complexity: ${$json.analysis.complexity}\\n- Effort Estimate: ${$json.analysis.effort}/5\\n\\nThis issue has been automatically triaged. A team member will review it shortly.\\n\\n---\\n*This response was generated by our AI automation system.*`\n}) }}",
+        "options": {}
+      },
+      "id": "post-auto-response",
+      "name": "Post Auto-Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1360,
+        200
+      ],
+      "credentials": {
+        "githubApi": {
+          "id": "github-api-creds",
+          "name": "GitHub API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.recommendations.needsTriaging }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "needs-triaging",
+      "name": "Needs Triaging?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  text: `${$json.analysis.priority === 'critical' ? '🚨' : '🔍'} GitHub Issue Needs Attention`,\n  blocks: [\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*${$json.analysis.priority === 'critical' ? '🚨 CRITICAL' : '🔍'} Issue Requires Triaging*\\n\\n*Repository:* ${$json.repository}\\n*Issue #${$json.issueNumber}:* ${$json.title}\\n*Author:* ${$json.author}\\n*Priority:* ${$json.analysis.priority.toUpperCase()}`\n      },\n      accessory: {\n        type: 'button',\n        text: {\n          type: 'plain_text',\n          text: 'View Issue'\n        },\n        url: $json.url\n      }\n    },\n    {\n      type: 'section',\n      fields: [\n        {\n          type: 'mrkdwn',\n          text: `*Type:* ${$json.analysis.issueType}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Complexity:* ${$json.analysis.complexity}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Category:* ${$json.analysis.category}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Effort:* ${$json.analysis.effort}/5`\n        }\n      ]\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Labels Applied:* ${$json.analysis.suggestedLabels.join(', ') || 'None'}\\n*Auto-Response:* ${$json.recommendations.shouldAutoRespond ? 'Posted' : 'None'}`\n      }\n    }\n  ]\n}) }}"
+      },
+      "id": "notify-team",
+      "name": "Notify Team for Triaging",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1360,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO github_issue_analysis (issue_number, repository, title, author, issue_type, priority, complexity, category, effort_estimate, suggested_labels, auto_labeled, auto_responded, needs_triaging, created_at) VALUES ({{ $json.issueNumber }}, '{{ $json.repository }}', '{{ $json.title.replace(/'/g, \"''\") }}', '{{ $json.author }}', '{{ $json.analysis.issueType }}', '{{ $json.analysis.priority }}', '{{ $json.analysis.complexity }}', '{{ $json.analysis.category }}', {{ $json.analysis.effort }}, '{{ JSON.stringify($json.analysis.suggestedLabels) }}', {{ $json.recommendations.shouldAutoLabel }}, {{ $json.recommendations.shouldAutoRespond }}, {{ $json.recommendations.needsTriaging }}, '{{ $json.createdAt }}');",
+        "additionalFields": {}
+      },
+      "id": "log-issue-analysis",
+      "name": "Log Issue Analysis",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1580,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-creds",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "value": "0 */6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "repository-health-check",
+      "name": "Repository Health Check",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        260,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Define repositories to monitor\nconst repositories = [\n  'your-org/agentic-ai-stack',\n  'your-org/claude-proxy',\n  'your-org/n8n-workflows'\n  // Add more repositories as needed\n];\n\nreturn {\n  repositories,\n  checkTimestamp: new Date().toISOString(),\n  metrics: [\n    'open_issues',\n    'open_pull_requests',\n    'recent_commits',\n    'stale_issues',\n    'security_alerts'\n  ]\n};"
+      },
+      "id": "define-repositories",
+      "name": "Define Repositories to Monitor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-repositories",
+      "name": "Split Repository Checks",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        700,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $json }}",
+        "options": {}
+      },
+      "id": "get-repository-info",
+      "name": "Get Repository Info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        920,
+        400
+      ],
+      "credentials": {
+        "githubApi": {
+          "id": "github-api-creds",
+          "name": "GitHub API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $node[\"Split Repository Checks\"].json }}/issues?state=open&sort=created&per_page=100",
+        "options": {}
+      },
+      "id": "get-open-issues",
+      "name": "Get Open Issues",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        920,
+        600
+      ],
+      "credentials": {
+        "githubApi": {
+          "id": "github-api-creds",
+          "name": "GitHub API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Analyze repository health\nconst repoName = $node[\"Split Repository Checks\"].json;\nconst repoInfo = $node[\"Get Repository Info\"].json;\nconst openIssues = $node[\"Get Open Issues\"].json || [];\n\n// Calculate repository metrics\nconst now = new Date();\nconst oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);\nconst oneMonthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);\n\nconst metrics = {\n  repository: repoName,\n  stars: repoInfo.stargazers_count || 0,\n  forks: repoInfo.forks_count || 0,\n  openIssues: repoInfo.open_issues_count || 0,\n  language: repoInfo.language || 'Unknown',\n  lastUpdate: repoInfo.updated_at,\n  defaultBranch: repoInfo.default_branch || 'main',\n  hasWiki: repoInfo.has_wiki || false,\n  hasProjects: repoInfo.has_projects || false,\n  visibility: repoInfo.visibility || 'private'\n};\n\n// Analyze issues\nconst issueAnalysis = {\n  totalOpen: openIssues.length,\n  bugs: openIssues.filter(issue => \n    issue.labels?.some(label => label.name.toLowerCase().includes('bug'))\n  ).length,\n  features: openIssues.filter(issue => \n    issue.labels?.some(label => \n      label.name.toLowerCase().includes('feature') || \n      label.name.toLowerCase().includes('enhancement')\n    )\n  ).length,\n  staleIssues: openIssues.filter(issue => \n    new Date(issue.updated_at) < oneMonthAgo\n  ).length,\n  recentIssues: openIssues.filter(issue => \n    new Date(issue.created_at) > oneWeekAgo\n  ).length,\n  needsResponse: openIssues.filter(issue => \n    issue.comments === 0 && new Date(issue.created_at) < new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000)\n  ).length\n};\n\n// Calculate health score\nlet healthScore = 100;\n\n// Deduct points for issues\nif (issueAnalysis.staleIssues > 5) healthScore -= 20;\nif (issueAnalysis.needsResponse > 3) healthScore -= 15;\nif (issueAnalysis.bugs > 10) healthScore -= 15;\nif (issueAnalysis.totalOpen > 50) healthScore -= 10;\nif (new Date(metrics.lastUpdate) < oneWeekAgo) healthScore -= 10;\n\nhealthScore = Math.max(0, healthScore);\n\n// Determine alerts\nconst alerts = [];\n\nif (issueAnalysis.staleIssues > 10) {\n  alerts.push({\n    type: 'stale_issues',\n    severity: 'warning',\n    message: `${issueAnalysis.staleIssues} issues haven't been updated in over a month`\n  });\n}\n\nif (issueAnalysis.needsResponse > 5) {\n  alerts.push({\n    type: 'unresponded_issues',\n    severity: 'warning',\n    message: `${issueAnalysis.needsResponse} issues need initial response`\n  });\n}\n\nif (issueAnalysis.bugs > 15) {\n  alerts.push({\n    type: 'high_bug_count',\n    severity: 'high',\n    message: `High number of open bugs: ${issueAnalysis.bugs}`\n  });\n}\n\nreturn {\n  repository: repoName,\n  metrics,\n  issueAnalysis,\n  healthScore,\n  alerts,\n  checkTimestamp: new Date().toISOString()\n};"
+      },
+      "id": "analyze-repository-health",
+      "name": "Analyze Repository Health",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate all repository health data\nconst allResults = $input.all();\nconst timestamp = $node[\"Define Repositories to Monitor\"].json.checkTimestamp;\n\nconst healthSummary = {\n  timestamp,\n  totalRepositories: allResults.length,\n  averageHealthScore: Math.round(\n    allResults.reduce((sum, repo) => sum + repo.json.healthScore, 0) / allResults.length\n  ),\n  totalOpenIssues: allResults.reduce((sum, repo) => sum + repo.json.issueAnalysis.totalOpen, 0),\n  totalStaleIssues: allResults.reduce((sum, repo) => sum + repo.json.issueAnalysis.staleIssues, 0),\n  totalBugs: allResults.reduce((sum, repo) => sum + repo.json.issueAnalysis.bugs, 0),\n  repositoriesWithAlerts: allResults.filter(repo => repo.json.alerts.length > 0).length,\n  repositories: allResults.map(repo => repo.json)\n};\n\n// Identify top concerns\nconst topConcerns = [];\n\nif (healthSummary.averageHealthScore < 70) {\n  topConcerns.push('Overall repository health is below average');\n}\n\nif (healthSummary.totalStaleIssues > 20) {\n  topConcerns.push(`${healthSummary.totalStaleIssues} stale issues across repositories`);\n}\n\nif (healthSummary.totalBugs > 30) {\n  topConcerns.push(`High bug count: ${healthSummary.totalBugs} open bugs`);\n}\n\nhealthSummary.topConcerns = topConcerns;\n\nreturn healthSummary;"
+      },
+      "id": "aggregate-repository-health",
+      "name": "Aggregate Repository Health",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.repositoriesWithAlerts }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "has-repository-alerts",
+      "name": "Has Repository Alerts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  text: \"📊 Repository Health Report\",\n  blocks: [\n    {\n      type: 'header',\n      text: {\n        type: 'plain_text',\n        text: '📊 Repository Health Report'\n      }\n    },\n    {\n      type: 'section',\n      fields: [\n        {\n          type: 'mrkdwn',\n          text: `*Repositories:* ${$json.totalRepositories}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Average Health:* ${$json.averageHealthScore}/100`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Open Issues:* ${$json.totalOpenIssues}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Stale Issues:* ${$json.totalStaleIssues}`\n        }\n      ]\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Repositories with Issues:*\\n${$json.repositories.filter(repo => repo.alerts.length > 0).slice(0, 5).map(repo => \n          `• *${repo.repository}*: Health ${repo.healthScore}/100\\n  ${repo.alerts.map(alert => `${alert.severity === 'high' ? '🔴' : '⚠️'} ${alert.message}`).join('\\n  ')}`\n        ).join('\\n\\n')}`\n      }\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Top Concerns:*\\n${$json.topConcerns.map(concern => `• ${concern}`).join('\\n') || '• No major concerns detected'}`\n      }\n    },\n    {\n      type: 'context',\n      elements: [\n        {\n          type: 'mrkdwn',\n          text: `Report generated: ${new Date($json.timestamp).toLocaleString()}`\n        }\n      ]\n    }\n  ]\n}) }}"
+      },
+      "id": "send-repository-health-report",
+      "name": "Send Repository Health Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1800,
+        500
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "GitHub Issue Webhook": {
+      "main": [
+        [
+          {
+            "node": "Is New Issue?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is New Issue?": {
+      "main": [
+        [
+          {
+            "node": "Analyze Issue with AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Issue with AI": {
+      "main": [
+        [
+          {
+            "node": "Process Issue Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Issue Analysis": {
+      "main": [
+        [
+          {
+            "node": "Should Auto-Label?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Should Auto-Respond?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Needs Triaging?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Issue Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Auto-Label?": {
+      "main": [
+        [
+          {
+            "node": "Add AI-Suggested Labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Auto-Respond?": {
+      "main": [
+        [
+          {
+            "node": "Post Auto-Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Triaging?": {
+      "main": [
+        [
+          {
+            "node": "Notify Team for Triaging",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Repository Health Check": {
+      "main": [
+        [
+          {
+            "node": "Define Repositories to Monitor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Define Repositories to Monitor": {
+      "main": [
+        [
+          {
+            "node": "Split Repository Checks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Repository Checks": {
+      "main": [
+        [
+          {
+            "node": "Get Repository Info",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Open Issues",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Repository Info": {
+      "main": [
+        [
+          {
+            "node": "Analyze Repository Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Open Issues": {
+      "main": [
+        [
+          {
+            "node": "Analyze Repository Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Repository Health": {
+      "main": [
+        [
+          {
+            "node": "Split Repository Checks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Repository Health": {
+      "main": [
+        [
+          {
+            "node": "Has Repository Alerts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Repository Alerts?": {
+      "main": [
+        [
+          {
+            "node": "Send Repository Health Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "github-integrations-workflow",
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "github-integration",
+      "name": "GitHub Integration"
+    },
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "issue-management",
+      "name": "Issue Management"
+    }
+  ]
+}

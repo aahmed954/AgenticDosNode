@@ -1,0 +1,316 @@
+# Security Configuration for Multi-Node Agentic AI Architecture
+
+# TLS/SSL Configuration
+tls:
+  enabled: true
+  cert_path: /etc/ssl/certs/
+  key_path: /etc/ssl/private/
+  ca_path: /etc/ssl/ca/
+
+  # Certificate Management
+  certificates:
+    - name: tailscale-internal
+      type: internal
+      issuer: tailscale
+      auto_renew: true
+
+    - name: public-api
+      type: letsencrypt
+      domains:
+        - api.yourdomain.com
+      auto_renew: true
+
+# Authentication & Authorization
+auth:
+  # API Key Management
+  api_keys:
+    rotation_days: 90
+    min_length: 32
+    storage: vault
+
+  # OAuth2/OIDC Configuration
+  oauth:
+    enabled: true
+    providers:
+      - name: github
+        client_id: ${GITHUB_CLIENT_ID}
+        client_secret: ${GITHUB_CLIENT_SECRET}
+        scopes: ["read:user", "read:org"]
+
+  # RBAC Configuration
+  rbac:
+    enabled: true
+    roles:
+      - name: admin
+        permissions: ["*"]
+
+      - name: developer
+        permissions:
+          - "read:*"
+          - "write:code"
+          - "execute:workflows"
+
+      - name: viewer
+        permissions:
+          - "read:metrics"
+          - "read:logs"
+
+# Network Security
+network:
+  # Firewall Rules
+  firewall:
+    default_policy: deny
+
+    inbound_rules:
+      - name: tailscale
+        port: 41641
+        protocol: udp
+        source: 0.0.0.0/0
+
+      - name: https
+        port: 443
+        protocol: tcp
+        source: 0.0.0.0/0
+
+      - name: monitoring
+        ports: [9090, 9100, 3000]
+        protocol: tcp
+        source: 100.64.0.0/16  # Tailscale network
+
+    outbound_rules:
+      - name: allow-all
+        destination: 0.0.0.0/0
+        protocol: all
+
+  # IDS/IPS Configuration
+  intrusion_detection:
+    enabled: true
+    provider: suricata
+    rules_update: daily
+
+    alerts:
+      - type: port_scan
+        action: block
+        duration: 3600
+
+      - type: brute_force
+        threshold: 5
+        window: 60
+        action: block
+        duration: 86400
+
+# Container Security
+containers:
+  # Runtime Security
+  runtime:
+    provider: gvisor
+    sandbox_level: strict
+
+  # Image Security
+  images:
+    scan_on_push: true
+    block_vulnerabilities: ["CRITICAL", "HIGH"]
+    trusted_registries:
+      - docker.io
+      - ghcr.io
+      - quay.io
+
+  # Capabilities
+  default_capabilities:
+    drop: ["ALL"]
+    add: ["CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID"]
+
+  # Resource Limits
+  resource_limits:
+    memory: 2Gi
+    cpu: 2
+    ephemeral_storage: 10Gi
+
+# Secrets Management
+secrets:
+  # Vault Configuration
+  vault:
+    enabled: true
+    address: https://vault.internal:8200
+    auth_method: kubernetes
+
+    policies:
+      - name: ai-services
+        paths:
+          - secret/data/api-keys/*
+          - secret/data/database/*
+
+    auto_rotation:
+      enabled: true
+      interval: 30d
+
+  # Encryption at Rest
+  encryption:
+    provider: age
+    key_management: vault
+
+    volumes:
+      - path: /data
+        encrypted: true
+        algorithm: AES-256-GCM
+
+      - path: /models
+        encrypted: false  # Large binary files
+
+# Compliance & Auditing
+compliance:
+  # Audit Logging
+  audit:
+    enabled: true
+    destinations:
+      - type: file
+        path: /var/log/audit/
+        rotation: daily
+        retention: 90d
+
+      - type: syslog
+        server: syslog.internal:514
+        protocol: tcp
+        format: json
+
+    events:
+      - authentication
+      - authorization
+      - data_access
+      - configuration_change
+      - api_calls
+
+  # Compliance Standards
+  standards:
+    - SOC2:
+        enabled: true
+        controls:
+          - access_control
+          - encryption
+          - monitoring
+          - incident_response
+
+    - GDPR:
+        enabled: true
+        features:
+          - data_minimization
+          - right_to_deletion
+          - consent_management
+          - breach_notification
+
+# Security Monitoring
+monitoring:
+  # SIEM Integration
+  siem:
+    enabled: true
+    provider: elasticsearch
+    endpoint: https://elastic.internal:9200
+
+    indices:
+      - name: security-events
+        retention: 30d
+
+      - name: access-logs
+        retention: 90d
+
+  # Alerting
+  alerts:
+    channels:
+      - type: email
+        recipients: ["security@yourdomain.com"]
+
+      - type: slack
+        webhook: ${SLACK_WEBHOOK_URL}
+        channel: "#security-alerts"
+
+    rules:
+      - name: suspicious_api_activity
+        condition: "rate > 1000/min"
+        severity: high
+
+      - name: unauthorized_access
+        condition: "status_code == 403"
+        severity: critical
+
+      - name: data_exfiltration
+        condition: "bytes_sent > 1GB"
+        severity: critical
+
+# Backup & Recovery
+backup:
+  # Encryption
+  encryption:
+    enabled: true
+    algorithm: AES-256
+    key_storage: vault
+
+  # Backup Targets
+  targets:
+    - name: s3
+      type: s3
+      bucket: backups-encrypted
+      region: us-east-1
+      versioning: true
+
+    - name: local
+      type: filesystem
+      path: /backup/encrypted
+      retention: 7d
+
+# Incident Response
+incident_response:
+  # Automated Response
+  automated_actions:
+    - trigger: brute_force_detected
+      actions:
+        - block_ip
+        - notify_security
+        - create_ticket
+
+    - trigger: data_breach_suspected
+      actions:
+        - isolate_container
+        - dump_memory
+        - notify_management
+
+  # Recovery Procedures
+  recovery:
+    - name: ransomware
+      steps:
+        - isolate_affected_systems
+        - restore_from_backup
+        - patch_vulnerabilities
+        - forensic_analysis
+
+    - name: api_key_compromise
+      steps:
+        - revoke_compromised_keys
+        - rotate_all_keys
+        - audit_access_logs
+        - update_security_policies
+
+# Security Hardening Checklist
+hardening:
+  os_level:
+    - disable_root_ssh
+    - enforce_key_based_auth
+    - configure_fail2ban
+    - enable_auditd
+    - kernel_hardening
+    - disable_unnecessary_services
+
+  application_level:
+    - input_validation
+    - output_encoding
+    - parameterized_queries
+    - secure_session_management
+    - rate_limiting
+    - csrf_protection
+
+  network_level:
+    - segment_networks
+    - implement_zero_trust
+    - enable_ddos_protection
+    - configure_waf
+    - use_vpn_tunnels
+    - monitor_traffic_patterns

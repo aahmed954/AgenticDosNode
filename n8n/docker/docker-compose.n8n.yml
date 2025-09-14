@@ -1,0 +1,145 @@
+version: '3.8'
+
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    container_name: n8n-automation
+    ports:
+      - "5678:5678"
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_HOST=postgres-n8n
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=${N8N_POSTGRES_PASSWORD:-n8n_secure_password}
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:-secure_password}
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678/}
+      - GENERIC_TIMEZONE=${TIMEZONE:-UTC}
+      - N8N_LOG_LEVEL=info
+      - N8N_LOG_OUTPUT=console
+      - N8N_METRICS=true
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_VERSION_NOTIFICATIONS_ENABLED=false
+      - N8N_TEMPLATES_ENABLED=true
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - EXECUTIONS_DATA_MAX_AGE=168  # 7 days
+      - N8N_PERSONALIZATION_ENABLED=false
+      # Custom environment variables for integrations
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+      - CLAUDE_PROXY_URL=${CLAUDE_PROXY_URL:-http://ccproxy:3000}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - NEWS_API_KEY=${NEWS_API_KEY}
+      - WEATHER_API_KEY=${WEATHER_API_KEY}
+      - VECTOR_DB_URL=${VECTOR_DB_URL:-http://qdrant:6333}
+      - REDIS_URL=${REDIS_URL:-redis://redis-n8n:6379}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./workflows:/tmp/workflows:ro
+      - ./config:/tmp/config:ro
+    depends_on:
+      - postgres-n8n
+      - redis-n8n
+    networks:
+      - n8n-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n.rule=Host(`n8n.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.n8n.tls=true"
+      - "traefik.http.routers.n8n.tls.certresolver=letsencrypt"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+
+  postgres-n8n:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    container_name: postgres-n8n
+    environment:
+      - POSTGRES_DB=n8n
+      - POSTGRES_USER=n8n
+      - POSTGRES_PASSWORD=${N8N_POSTGRES_PASSWORD:-n8n_secure_password}
+      - POSTGRES_NON_ROOT_USER=n8n_user
+      - POSTGRES_NON_ROOT_PASSWORD=${N8N_POSTGRES_USER_PASSWORD:-n8n_user_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./config/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - n8n-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n -d n8n"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-n8n:
+    image: redis:7-alpine
+    restart: unless-stopped
+    container_name: redis-n8n
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_secure_password}
+    volumes:
+      - redis_data:/data
+    networks:
+      - n8n-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Vector Database for RAG workflows
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    container_name: qdrant-n8n
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+      - ./config/qdrant.yaml:/qdrant/config/production.yaml:ro
+    networks:
+      - n8n-network
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+
+  # Webhook relay for GitHub integration
+  webhook-relay:
+    image: nginx:alpine
+    restart: unless-stopped
+    container_name: webhook-relay
+    ports:
+      - "8080:80"
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - n8n-network
+    depends_on:
+      - n8n
+
+volumes:
+  n8n_data:
+    driver: local
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  qdrant_data:
+    driver: local
+
+networks:
+  n8n-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

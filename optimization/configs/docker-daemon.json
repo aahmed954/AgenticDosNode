@@ -1,0 +1,103 @@
+{
+  "debug": false,
+  "log-level": "warn",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "10",
+    "compress": "true"
+  },
+  "storage-driver": "overlay2",
+  "storage-opts": [
+    "overlay2.override_kernel_check=true",
+    "overlay2.size=50G"
+  ],
+  "metrics-addr": "127.0.0.1:9323",
+  "experimental": true,
+  "features": {
+    "buildkit": true
+  },
+  "max-concurrent-downloads": 10,
+  "max-concurrent-uploads": 10,
+  "max-download-attempts": 5,
+  "default-runtime": "nvidia",
+  "runtimes": {
+    "nvidia": {
+      "path": "nvidia-container-runtime",
+      "runtimeArgs": []
+    }
+  },
+  "exec-opts": [
+    "native.cgroupdriver=systemd"
+  ],
+  "default-cgroupns-mode": "host",
+  "cgroup-parent": "/docker",
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": 1048576,
+      "Soft": 1048576
+    },
+    "nproc": {
+      "Name": "nproc",
+      "Hard": 524288,
+      "Soft": 524288
+    },
+    "memlock": {
+      "Name": "memlock",
+      "Hard": -1,
+      "Soft": -1
+    }
+  },
+  "registry-mirrors": [
+    "https://mirror.gcr.io",
+    "https://docker.mirrors.ustc.edu.cn"
+  ],
+  "insecure-registries": [],
+  "live-restore": true,
+  "userland-proxy": false,
+  "ip-forward": true,
+  "ip-masq": true,
+  "iptables": true,
+  "ipv6": false,
+  "fixed-cidr": "172.17.0.0/16",
+  "default-gateway": "",
+  "icc": true,
+  "default-address-pools": [
+    {
+      "base": "172.80.0.0/16",
+      "size": 24
+    },
+    {
+      "base": "172.90.0.0/16",
+      "size": 24
+    }
+  ],
+  "dns": [
+    "8.8.8.8",
+    "8.8.4.4"
+  ],
+  "dns-opts": [
+    "ndots:0"
+  ],
+  "dns-search": [],
+  "shutdown-timeout": 30,
+  "debug-key": "docker-debug",
+  "exec-root": "/var/run/docker",
+  "bridge": "",
+  "bip": "",
+  "mtu": 1500,
+  "init": true,
+  "init-path": "/usr/bin/docker-init",
+  "data-root": "/var/lib/docker",
+  "group": "docker",
+  "default-shm-size": "512M",
+  "no-new-privileges": false,
+  "seccomp-profile": "",
+  "selinux-enabled": false,
+  "userns-remap": "",
+  "containerd": "/run/containerd/containerd.sock",
+  "containerd-namespace": "moby",
+  "containerd-plugin-namespace": "plugins.moby",
+  "node-generic-resources": []
+}

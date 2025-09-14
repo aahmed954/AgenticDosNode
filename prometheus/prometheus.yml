@@ -1,0 +1,173 @@
+# Prometheus Configuration for Multi-Node AI Architecture
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'agentic-ai-cluster'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - "alerts/*.yml"
+  - "recording_rules/*.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          node: 'oracle1'
+
+  # Node Exporter - System Metrics
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets:
+          - '100.64.1.1:9100'  # thanos
+        labels:
+          node: 'thanos'
+          type: 'gpu-node'
+
+      - targets:
+          - '100.64.1.2:9100'  # oracle1
+        labels:
+          node: 'oracle1'
+          type: 'cpu-node'
+
+  # NVIDIA GPU Metrics (thanos only)
+  - job_name: 'nvidia-gpu'
+    static_configs:
+      - targets: ['100.64.1.1:9835']
+        labels:
+          node: 'thanos'
+          gpu: 'rtx3080'
+
+  # vLLM Metrics
+  - job_name: 'vllm'
+    static_configs:
+      - targets: ['100.64.1.1:8000']
+        labels:
+          node: 'thanos'
+          service: 'vllm'
+    metrics_path: '/metrics'
+
+  # Qdrant Vector Database
+  - job_name: 'qdrant'
+    static_configs:
+      - targets:
+          - '100.64.1.1:6333'  # Primary
+        labels:
+          node: 'thanos'
+          role: 'primary'
+
+      - targets:
+          - '100.64.1.2:6333'  # Replica
+        labels:
+          node: 'oracle1'
+          role: 'replica'
+    metrics_path: '/metrics'
+
+  # n8n Workflow Engine
+  - job_name: 'n8n'
+    static_configs:
+      - targets: ['100.64.1.2:5678']
+        labels:
+          node: 'oracle1'
+          service: 'n8n'
+    metrics_path: '/metrics'
+
+  # LangGraph API
+  - job_name: 'langgraph'
+    static_configs:
+      - targets: ['100.64.1.2:8080']
+        labels:
+          node: 'oracle1'
+          service: 'langgraph'
+    metrics_path: '/metrics'
+
+  # Kong API Gateway
+  - job_name: 'kong'
+    static_configs:
+      - targets: ['100.64.1.2:8001']
+        labels:
+          node: 'oracle1'
+          service: 'kong'
+    metrics_path: '/metrics'
+
+  # Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['100.64.1.2:9121']
+        labels:
+          node: 'oracle1'
+          service: 'redis'
+
+  # PostgreSQL
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['100.64.1.2:9187']
+        labels:
+          node: 'oracle1'
+          service: 'postgres'
+
+  # Docker Containers
+  - job_name: 'docker'
+    static_configs:
+      - targets:
+          - '100.64.1.1:9323'  # thanos
+        labels:
+          node: 'thanos'
+
+      - targets:
+          - '100.64.1.2:9323'  # oracle1
+        labels:
+          node: 'oracle1'
+
+  # Claude Proxy Metrics
+  - job_name: 'claude-proxy'
+    static_configs:
+      - targets: ['100.64.1.2:8081']
+        labels:
+          node: 'oracle1'
+          service: 'claude-proxy'
+    metrics_path: '/metrics'
+
+  # Blackbox Exporter - Endpoint Monitoring
+  - job_name: 'blackbox'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - https://100.64.1.1:8000/health  # vLLM
+          - https://100.64.1.2:8080/health  # LangGraph
+          - https://100.64.1.2:5678/healthz # n8n
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+# Remote Write Configuration (Optional)
+# remote_write:
+#   - url: "https://prometheus-remote.example.com/api/v1/write"
+#     bearer_token: "your-token-here"
+#     queue_config:
+#       max_samples_per_send: 10000
+#       batch_send_deadline: 30s
+
+# Remote Read Configuration (Optional)
+# remote_read:
+#   - url: "https://prometheus-remote.example.com/api/v1/read"
+#     bearer_token: "your-token-here"

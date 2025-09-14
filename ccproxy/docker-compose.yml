@@ -1,0 +1,204 @@
+version: '3.8'
+
+services:
+  ccproxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: ccproxy-server
+    hostname: ccproxy
+    restart: unless-stopped
+
+    # Security hardening
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:unconfined  # Can be restricted further based on needs
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE  # Only if binding to ports < 1024
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100M
+      - /app/tmp:noexec,nosuid,size=50M
+      - /app/logs:nosuid,size=200M
+
+    # Resource limits
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpu_quota: 50000  # 0.5 CPU
+    cpu_period: 100000
+    pids_limit: 100
+
+    # Networking
+    ports:
+      - "127.0.0.1:8000:8000"  # Only bind to localhost
+    networks:
+      - ccproxy_network
+
+    # Environment configuration
+    environment:
+      # Server configuration
+      - CCPROXY_HOST=0.0.0.0
+      - CCPROXY_PORT=8000
+      - CCPROXY_DEBUG=false
+      - CCPROXY_LOG_LEVEL=INFO
+
+      # Authentication (override with your values)
+      - CCPROXY_AUTH_METHOD=api_key
+      - CCPROXY_API_KEYS=${CCPROXY_API_KEYS:-your-api-key-here}
+
+      # Claude API configuration
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_API_BASE=https://api.anthropic.com
+      - ANTHROPIC_VERSION=2023-06-01
+
+      # Rate limiting
+      - CCPROXY_RATE_LIMIT_RPM=60
+      - CCPROXY_RATE_LIMIT_TPM=100000
+      - CCPROXY_CONCURRENT_REQUESTS=10
+
+      # Model configuration
+      - CCPROXY_DEFAULT_MODEL=claude-3-5-sonnet-20241022
+      - CCPROXY_SUPPORTED_MODELS=claude-3-5-sonnet-20241022,claude-3-5-haiku-20241022,claude-3-opus-20240229
+
+      # Security and CORS
+      - CCPROXY_ENABLE_CORS=true
+      - CCPROXY_CORS_ORIGINS=*
+      - CCPROXY_MAX_REQUEST_SIZE=1048576  # 1MB
+
+      # Monitoring
+      - CCPROXY_ENABLE_METRICS=true
+      - CCPROXY_METRICS_PORT=8001
+      - CCPROXY_LOG_REQUESTS=true
+      - CCPROXY_LOG_RESPONSES=false
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels: "service=ccproxy"
+
+  # Optional: Redis for advanced caching and rate limiting
+  redis:
+    image: redis:7-alpine
+    container_name: ccproxy-redis
+    hostname: redis
+    restart: unless-stopped
+
+    # Security
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+
+    # Configuration
+    command: >
+      redis-server
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD:-defaultpassword}
+
+    # Resources
+    mem_limit: 256m
+
+    # Networking
+    networks:
+      - ccproxy_network
+    ports:
+      - "127.0.0.1:6379:6379"
+
+    # Persistence
+    volumes:
+      - redis_data:/data
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Prometheus metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ccproxy-prometheus
+    hostname: prometheus
+    restart: unless-stopped
+
+    # Security
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    user: "65534"  # nobody user
+
+    # Configuration
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+
+    # Networking
+    networks:
+      - ccproxy_network
+    ports:
+      - "127.0.0.1:9090:9090"
+
+    # Configuration files
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+    # Resources
+    mem_limit: 512m
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+
+networks:
+  ccproxy_network:
+    name: ccproxy_network
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-ccproxy
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.30.0.0/16
+          gateway: 172.30.0.1

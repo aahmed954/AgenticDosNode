@@ -1,0 +1,306 @@
+{
+  "name": "Cost Tracking & Budget Alerts - API Usage Monitoring",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "value": "0 */6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cost-check-trigger",
+      "name": "Cost Check Schedule",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  DATE(created_at) as date,\n  ai_service,\n  COUNT(*) as request_count,\n  SUM(input_tokens) as total_input_tokens,\n  SUM(output_tokens) as total_output_tokens,\n  SUM(cost_estimate) as daily_cost\nFROM ai_interaction_logs \nWHERE created_at >= CURRENT_DATE - INTERVAL '30 days'\nGROUP BY DATE(created_at), ai_service\nORDER BY date DESC, daily_cost DESC;",
+        "additionalFields": {}
+      },
+      "id": "fetch-usage-data",
+      "name": "Fetch Usage Data",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        480,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-creds",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  workflow_id,\n  COUNT(*) as executions,\n  AVG(execution_time) as avg_execution_time,\n  SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful_executions,\n  SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_executions\nFROM workflow_metrics \nWHERE created_at >= CURRENT_DATE - INTERVAL '7 days'\nGROUP BY workflow_id\nORDER BY executions DESC;",
+        "additionalFields": {}
+      },
+      "id": "fetch-workflow-metrics",
+      "name": "Fetch Workflow Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        480,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-creds",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Analyze usage data and calculate costs\nconst usageData = $node[\"Fetch Usage Data\"].json;\nconst workflowMetrics = $node[\"Fetch Workflow Metrics\"].json;\n\n// Define cost thresholds and budgets\nconst budgets = {\n  daily: parseFloat(process.env.DAILY_AI_BUDGET || '5.00'),\n  weekly: parseFloat(process.env.WEEKLY_AI_BUDGET || '25.00'),\n  monthly: parseFloat(process.env.MONTHLY_AI_BUDGET || '100.00')\n};\n\n// Calculate current period costs\nconst today = new Date().toISOString().split('T')[0];\nconst weekStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];\nconst monthStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];\n\nlet dailyCost = 0;\nlet weeklyCost = 0;\nlet monthlyCost = 0;\n\nconst serviceBreakdown = {};\nconst dailyBreakdown = {};\n\nusageData.forEach(row => {\n  const cost = parseFloat(row.daily_cost) || 0;\n  const date = row.date;\n  const service = row.ai_service;\n  \n  // Service breakdown\n  if (!serviceBreakdown[service]) {\n    serviceBreakdown[service] = {\n      requests: 0,\n      inputTokens: 0,\n      outputTokens: 0,\n      cost: 0\n    };\n  }\n  \n  serviceBreakdown[service].requests += parseInt(row.request_count) || 0;\n  serviceBreakdown[service].inputTokens += parseInt(row.total_input_tokens) || 0;\n  serviceBreakdown[service].outputTokens += parseInt(row.total_output_tokens) || 0;\n  serviceBreakdown[service].cost += cost;\n  \n  // Daily breakdown\n  dailyBreakdown[date] = (dailyBreakdown[date] || 0) + cost;\n  \n  // Period calculations\n  if (date === today) dailyCost += cost;\n  if (date >= weekStart) weeklyCost += cost;\n  if (date >= monthStart) monthlyCost += cost;\n});\n\n// Calculate budget utilization\nconst budgetUtilization = {\n  daily: {\n    spent: dailyCost,\n    budget: budgets.daily,\n    percentage: Math.round((dailyCost / budgets.daily) * 100),\n    remaining: budgets.daily - dailyCost\n  },\n  weekly: {\n    spent: weeklyCost,\n    budget: budgets.weekly,\n    percentage: Math.round((weeklyCost / budgets.weekly) * 100),\n    remaining: budgets.weekly - weeklyCost\n  },\n  monthly: {\n    spent: monthlyCost,\n    budget: budgets.monthly,\n    percentage: Math.round((monthlyCost / budgets.monthly) * 100),\n    remaining: budgets.monthly - monthlyCost\n  }\n};\n\n// Identify trends and anomalies\nconst dailyValues = Object.values(dailyBreakdown);\nconst avgDailyCost = dailyValues.reduce((sum, cost) => sum + cost, 0) / dailyValues.length;\nconst todayVsAverage = dailyCost / avgDailyCost;\n\n// Check for alerts\nconst alerts = [];\n\nif (budgetUtilization.daily.percentage > 80) {\n  alerts.push({\n    type: 'budget_warning',\n    severity: budgetUtilization.daily.percentage > 100 ? 'critical' : 'warning',\n    message: `Daily budget ${budgetUtilization.daily.percentage}% utilized ($${dailyCost.toFixed(2)} of $${budgets.daily})`,\n    period: 'daily'\n  });\n}\n\nif (budgetUtilization.weekly.percentage > 80) {\n  alerts.push({\n    type: 'budget_warning',\n    severity: budgetUtilization.weekly.percentage > 100 ? 'critical' : 'warning',\n    message: `Weekly budget ${budgetUtilization.weekly.percentage}% utilized ($${weeklyCost.toFixed(2)} of $${budgets.weekly})`,\n    period: 'weekly'\n  });\n}\n\nif (budgetUtilization.monthly.percentage > 90) {\n  alerts.push({\n    type: 'budget_warning',\n    severity: budgetUtilization.monthly.percentage > 100 ? 'critical' : 'warning',\n    message: `Monthly budget ${budgetUtilization.monthly.percentage}% utilized ($${monthlyCost.toFixed(2)} of $${budgets.monthly})`,\n    period: 'monthly'\n  });\n}\n\nif (todayVsAverage > 2) {\n  alerts.push({\n    type: 'anomaly_detection',\n    severity: 'warning',\n    message: `Today's usage is ${Math.round(todayVsAverage * 100)}% higher than average daily usage`,\n    period: 'daily'\n  });\n}\n\n// Workflow efficiency analysis\nconst workflowAnalysis = workflowMetrics.map(workflow => ({\n  workflowId: workflow.workflow_id,\n  executions: parseInt(workflow.executions),\n  avgExecutionTime: parseFloat(workflow.avg_execution_time),\n  successRate: Math.round((parseInt(workflow.successful_executions) / parseInt(workflow.executions)) * 100),\n  failureCount: parseInt(workflow.failed_executions)\n}));\n\n// Find most expensive services\nconst topExpensiveServices = Object.entries(serviceBreakdown)\n  .sort((a, b) => b[1].cost - a[1].cost)\n  .slice(0, 5)\n  .map(([service, data]) => ({\n    service,\n    ...data,\n    cost: Math.round(data.cost * 100) / 100\n  }));\n\nreturn {\n  timestamp: new Date().toISOString(),\n  budgets,\n  budgetUtilization,\n  costs: {\n    daily: Math.round(dailyCost * 100) / 100,\n    weekly: Math.round(weeklyCost * 100) / 100,\n    monthly: Math.round(monthlyCost * 100) / 100,\n    avgDaily: Math.round(avgDailyCost * 100) / 100\n  },\n  trends: {\n    todayVsAverage: Math.round(todayVsAverage * 100) / 100,\n    dailyBreakdown,\n    topExpensiveServices\n  },\n  workflowAnalysis,\n  alerts\n};"
+      },
+      "id": "analyze-costs",
+      "name": "Analyze Costs & Usage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.alerts.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-alerts",
+      "name": "Alerts Present?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  text: `${$json.alerts.some(a => a.severity === 'critical') ? '🚨' : '⚠️'} AI Cost Alert`,\n  blocks: [\n    {\n      type: 'header',\n      text: {\n        type: 'plain_text',\n        text: `${$json.alerts.some(a => a.severity === 'critical') ? '🚨 CRITICAL' : '⚠️'} AI Cost Alert`\n      }\n    },\n    {\n      type: 'section',\n      fields: [\n        {\n          type: 'mrkdwn',\n          text: `*Daily:* $${$json.costs.daily} / $${$json.budgets.daily} (${$json.budgetUtilization.daily.percentage}%)`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Weekly:* $${$json.costs.weekly} / $${$json.budgets.weekly} (${$json.budgetUtilization.weekly.percentage}%)`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Monthly:* $${$json.costs.monthly} / $${$json.budgets.monthly} (${$json.budgetUtilization.monthly.percentage}%)`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Avg Daily:* $${$json.costs.avgDaily}`\n        }\n      ]\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Active Alerts:*\\n${$json.alerts.map(alert => \n          `• ${alert.severity === 'critical' ? '🚨' : '⚠️'} ${alert.message}`\n        ).join('\\n')}`\n      }\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Top Expensive Services:*\\n${$json.trends.topExpensiveServices.slice(0, 3).map(service => \n          `• ${service.service}: $${service.cost} (${service.requests} requests)`\n        ).join('\\n')}`\n      }\n    },\n    {\n      type: 'context',\n      elements: [\n        {\n          type: 'mrkdwn',\n          text: `Report generated: ${new Date($json.timestamp).toLocaleString()}`\n        }\n      ]\n    }\n  ]\n}) }}"
+      },
+      "id": "send-cost-alert",
+      "name": "Send Cost Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ new Date().getHours() }}",
+              "rightValue": 9,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "is-morning-report",
+      "name": "Morning Report Time?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  text: \"📊 Daily AI Usage Report\",\n  blocks: [\n    {\n      type: 'header',\n      text: {\n        type: 'plain_text',\n        text: '📊 Daily AI Usage & Cost Report'\n      }\n    },\n    {\n      type: 'section',\n      fields: [\n        {\n          type: 'mrkdwn',\n          text: `*Yesterday:* $${$json.costs.daily}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*This Week:* $${$json.costs.weekly}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*This Month:* $${$json.costs.monthly}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Trend:* ${$json.trends.todayVsAverage >= 1 ? '📈' : '📉'} ${Math.abs(($json.trends.todayVsAverage - 1) * 100).toFixed(0)}%`\n        }\n      ]\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Budget Status:*\\n• Daily: ${$json.budgetUtilization.daily.percentage}% used ($${$json.budgetUtilization.daily.remaining.toFixed(2)} remaining)\\n• Weekly: ${$json.budgetUtilization.weekly.percentage}% used ($${$json.budgetUtilization.weekly.remaining.toFixed(2)} remaining)\\n• Monthly: ${$json.budgetUtilization.monthly.percentage}% used ($${$json.budgetUtilization.monthly.remaining.toFixed(2)} remaining)`\n      }\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Top Services by Cost:*\\n${$json.trends.topExpensiveServices.slice(0, 3).map((service, index) => \n          `${index + 1}. ${service.service}: $${service.cost}\\n   ${service.requests} requests, ${service.inputTokens + service.outputTokens} tokens`\n        ).join('\\n')}`\n      }\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Workflow Performance:*\\n${$json.workflowAnalysis.slice(0, 3).map(workflow => \n          `• ${workflow.workflowId}: ${workflow.executions} runs, ${workflow.successRate}% success`\n        ).join('\\n')}`\n      }\n    }\n  ]\n}) }}"
+      },
+      "id": "send-daily-report",
+      "name": "Send Daily Cost Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1140,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO cost_tracking (timestamp, daily_cost, weekly_cost, monthly_cost, daily_budget_percent, weekly_budget_percent, monthly_budget_percent, alert_count, top_service, top_service_cost, anomaly_detected) VALUES ('{{ $json.timestamp }}', {{ $json.costs.daily }}, {{ $json.costs.weekly }}, {{ $json.costs.monthly }}, {{ $json.budgetUtilization.daily.percentage }}, {{ $json.budgetUtilization.weekly.percentage }}, {{ $json.budgetUtilization.monthly.percentage }}, {{ $json.alerts.length }}, '{{ $json.trends.topExpensiveServices[0]?.service || 'none' }}', {{ $json.trends.topExpensiveServices[0]?.cost || 0 }}, {{ $json.alerts.some(a => a.type === 'anomaly_detection') }});",
+        "additionalFields": {}
+      },
+      "id": "store-cost-data",
+      "name": "Store Cost Analytics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1360,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-creds",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Cost Check Schedule": {
+      "main": [
+        [
+          {
+            "node": "Fetch Usage Data",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Workflow Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Usage Data": {
+      "main": [
+        [
+          {
+            "node": "Analyze Costs & Usage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Workflow Metrics": {
+      "main": [
+        [
+          {
+            "node": "Analyze Costs & Usage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Costs & Usage": {
+      "main": [
+        [
+          {
+            "node": "Alerts Present?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Morning Report Time?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Store Cost Analytics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alerts Present?": {
+      "main": [
+        [
+          {
+            "node": "Send Cost Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Morning Report Time?": {
+      "main": [
+        [
+          {
+            "node": "Send Daily Cost Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "cost-tracking-alerts-workflow",
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "infrastructure",
+      "name": "Infrastructure"
+    },
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "cost-management",
+      "name": "Cost Management"
+    }
+  ]
+}

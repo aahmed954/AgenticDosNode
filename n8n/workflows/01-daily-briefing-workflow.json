@@ -1,0 +1,374 @@
+{
+  "name": "Daily Briefing - News Aggregation & AI Analysis",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "value": "0 7 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Daily Briefing Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "endpoint": "everything",
+        "additionalFields": {
+          "sortBy": "publishedAt",
+          "pageSize": 20,
+          "language": "en"
+        },
+        "q": "AI OR \"artificial intelligence\" OR machine learning OR technology OR cybersecurity OR cloud computing",
+        "sources": "techcrunch,ars-technica,wired,the-verge,engadget"
+      },
+      "id": "news-api-tech",
+      "name": "Fetch Tech News",
+      "type": "n8n-nodes-base.newsApi",
+      "typeVersion": 1,
+      "position": [
+        480,
+        200
+      ],
+      "credentials": {
+        "newsApi": {
+          "id": "news-api-creds",
+          "name": "News API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "endpoint": "everything",
+        "additionalFields": {
+          "sortBy": "publishedAt",
+          "pageSize": 15,
+          "language": "en"
+        },
+        "q": "business OR finance OR markets OR economy OR startup",
+        "sources": "bloomberg,reuters,financial-times,business-insider"
+      },
+      "id": "news-api-business",
+      "name": "Fetch Business News",
+      "type": "n8n-nodes-base.newsApi",
+      "typeVersion": 1,
+      "position": [
+        480,
+        400
+      ],
+      "credentials": {
+        "newsApi": {
+          "id": "news-api-creds",
+          "name": "News API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge and deduplicate news articles\nconst techArticles = $input.first().json.articles || [];\nconst businessArticles = $input.last().json.articles || [];\n\n// Combine articles\nconst allArticles = [...techArticles, ...businessArticles];\n\n// Remove duplicates based on URL\nconst uniqueArticles = allArticles.filter((article, index, self) => \n  index === self.findIndex((a) => a.url === article.url)\n);\n\n// Sort by published date (newest first)\nconst sortedArticles = uniqueArticles.sort((a, b) => \n  new Date(b.publishedAt) - new Date(a.publishedAt)\n);\n\n// Take top 25 articles\nconst topArticles = sortedArticles.slice(0, 25);\n\n// Format articles for AI analysis\nconst formattedArticles = topArticles.map((article, index) => ({\n  id: index + 1,\n  title: article.title,\n  description: article.description,\n  source: article.source.name,\n  publishedAt: article.publishedAt,\n  url: article.url,\n  content: article.content ? article.content.substring(0, 500) + '...' : ''\n}));\n\nreturn {\n  articles: formattedArticles,\n  totalCount: formattedArticles.length,\n  generatedAt: new Date().toISOString()\n};"
+      },
+      "id": "merge-news",
+      "name": "Merge & Process News",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CLAUDE_PROXY_URL }}/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-3-sonnet-20240229\",\n  max_tokens: 2000,\n  messages: [{\n    role: \"user\",\n    content: `You are an AI analyst tasked with creating a comprehensive daily briefing from news articles. \n\nAnalyze the following ${$json.totalCount} news articles and create a structured briefing with:\n\n1. **Executive Summary** (2-3 sentences)\n2. **Key Technology Trends** (3-4 bullet points)\n3. **Business & Market Insights** (3-4 bullet points)\n4. **Notable Developments** (2-3 major news items with brief analysis)\n5. **Implications & Outlook** (forward-looking analysis)\n6. **Recommended Actions** (3 actionable insights)\n\nNews Articles:\n${$json.articles.map(article => \n  `**${article.title}** (${article.source})\n  ${article.description}\n  Published: ${article.publishedAt}\n  URL: ${article.url}\n  ---`\n).join('\\n')}\n\nFormat your response in clean markdown with clear sections and bullet points. Focus on actionable insights and strategic implications.`\n  }]\n}) }}"
+      },
+      "id": "claude-analysis",
+      "name": "Claude News Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        920,
+        300
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "claude-api-creds",
+          "name": "Claude API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Claude response and format for distribution\nconst claudeResponse = $json.content[0].text;\nconst articles = $node[\"Merge & Process News\"].json.articles;\n\nconst briefingData = {\n  date: new Date().toLocaleDateString('en-US', { \n    year: 'numeric', \n    month: 'long', \n    day: 'numeric',\n    weekday: 'long'\n  }),\n  analysis: claudeResponse,\n  sourceCount: articles.length,\n  sources: [...new Set(articles.map(a => a.source))],\n  generatedAt: new Date().toISOString(),\n  articles: articles.slice(0, 10) // Include top 10 articles in summary\n};\n\n// Create email subject\nconst emailSubject = `Daily AI & Tech Briefing - ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;\n\n// Format HTML email content\nconst htmlContent = `\n<!DOCTYPE html>\n<html>\n<head>\n    <style>\n        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; }\n        .header { background: #2c3e50; color: white; padding: 20px; text-align: center; }\n        .content { padding: 20px; max-width: 800px; margin: 0 auto; }\n        .section { margin-bottom: 30px; }\n        .section h2 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 5px; }\n        .articles { background: #f8f9fa; padding: 15px; border-left: 4px solid #3498db; }\n        .article { margin-bottom: 15px; padding: 10px; background: white; border-radius: 5px; }\n        .meta { color: #666; font-size: 0.9em; }\n        ul { padding-left: 20px; }\n        li { margin-bottom: 8px; }\n    </style>\n</head>\n<body>\n    <div class=\"header\">\n        <h1>🤖 Daily AI & Technology Briefing</h1>\n        <p>${briefingData.date}</p>\n        <p>Analyzed ${briefingData.sourceCount} articles from ${briefingData.sources.length} sources</p>\n    </div>\n    \n    <div class=\"content\">\n        <div class=\"section\">\n            ${claudeResponse.split('\\n').map(line => {\n                if (line.startsWith('# ')) {\n                    return `<h1>${line.substring(2)}</h1>`;\n                } else if (line.startsWith('## ')) {\n                    return `<h2>${line.substring(3)}</h2>`;\n                } else if (line.startsWith('### ')) {\n                    return `<h3>${line.substring(4)}</h3>`;\n                } else if (line.startsWith('- ')) {\n                    return `<li>${line.substring(2)}</li>`;\n                } else if (line.startsWith('* ')) {\n                    return `<li>${line.substring(2)}</li>`;\n                } else if (line.trim() !== '') {\n                    return `<p>${line}</p>`;\n                }\n                return '';\n            }).join('\\n')}\n        </div>\n        \n        <div class=\"articles\">\n            <h2>📰 Top Articles Referenced</h2>\n            ${articles.slice(0, 10).map(article => `\n                <div class=\"article\">\n                    <h4><a href=\"${article.url}\" target=\"_blank\">${article.title}</a></h4>\n                    <p>${article.description}</p>\n                    <p class=\"meta\">${article.source} • ${new Date(article.publishedAt).toLocaleString()}</p>\n                </div>\n            `).join('')}\n        </div>\n        \n        <div class=\"meta\" style=\"text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;\">\n            <p>Generated by n8n AI Automation • ${new Date().toLocaleString()}</p>\n        </div>\n    </div>\n</body>\n</html>\n`;\n\n// Create Slack formatted message\nconst slackMessage = {\n  text: \"Daily AI & Tech Briefing\",\n  blocks: [\n    {\n      type: \"header\",\n      text: {\n        type: \"plain_text\",\n        text: `🤖 Daily AI & Tech Briefing - ${new Date().toLocaleDateString()}`\n      }\n    },\n    {\n      type: \"context\",\n      elements: [\n        {\n          type: \"mrkdwn\",\n          text: `Analyzed ${briefingData.sourceCount} articles from ${briefingData.sources.join(', ')}`\n        }\n      ]\n    },\n    {\n      type: \"divider\"\n    },\n    {\n      type: \"section\",\n      text: {\n        type: \"mrkdwn\",\n        text: claudeResponse.substring(0, 2900) // Slack message limit\n      }\n    }\n  ]\n};\n\nreturn [{\n  briefingData,\n  emailSubject,\n  htmlContent,\n  slackMessage,\n  textContent: claudeResponse\n}];"
+      },
+      "id": "format-output",
+      "name": "Format Briefing Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.EMAIL_FROM }}",
+        "toEmail": "team@company.com",
+        "subject": "={{ $json.emailSubject }}",
+        "html": "={{ $json.htmlContent }}",
+        "text": "={{ $json.textContent }}"
+      },
+      "id": "send-email",
+      "name": "Send Email Briefing",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        200
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-creds",
+          "name": "SMTP Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify($json.slackMessage) }}"
+      },
+      "id": "send-slack",
+      "name": "Send Slack Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1360,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO workflow_metrics (workflow_id, execution_id, status, execution_time) VALUES ('daily-briefing', '{{ $execution.id }}', 'completed', {{ $execution.duration }});",
+        "additionalFields": {}
+      },
+      "id": "log-metrics",
+      "name": "Log Execution Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1580,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-creds",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "error-check",
+      "name": "Check for Errors",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  text: `❌ Daily Briefing Failed`,\n  blocks: [{\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: `*Daily Briefing Workflow Failed*\\n\\n*Error:* ${$json.error || 'Unknown error'}\\n*Time:* ${new Date().toLocaleString()}\\n*Execution ID:* ${$execution.id}`\n    }\n  }]\n}) }}"
+      },
+      "id": "error-notification",
+      "name": "Send Error Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1140,
+        600
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily Briefing Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Tech News",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Business News",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Tech News": {
+      "main": [
+        [
+          {
+            "node": "Merge & Process News",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Business News": {
+      "main": [
+        [
+          {
+            "node": "Merge & Process News",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge & Process News": {
+      "main": [
+        [
+          {
+            "node": "Claude News Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude News Analysis": {
+      "main": [
+        [
+          {
+            "node": "Format Briefing Output",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check for Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Briefing Output": {
+      "main": [
+        [
+          {
+            "node": "Send Email Briefing",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Slack Notification",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Execution Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check for Errors": {
+      "main": [
+        [
+          {
+            "node": "Send Error Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "daily-briefing-workflow",
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "ai-workflows",
+      "name": "AI Workflows"
+    }
+  ]
+}

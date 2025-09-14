@@ -1,0 +1,440 @@
+{
+  "name": "Security Monitoring - Log Analysis & Threat Detection",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "value": "*/15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "security-check-trigger",
+      "name": "Security Check Schedule",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  source_ip,\n  COUNT(*) as request_count,\n  COUNT(DISTINCT webhook_name) as unique_endpoints,\n  MAX(created_at) as last_request,\n  STRING_AGG(DISTINCT webhook_name, ', ') as endpoints_accessed\nFROM webhook_logs \nWHERE created_at >= NOW() - INTERVAL '1 hour'\nGROUP BY source_ip\nHAVING COUNT(*) > 50 OR COUNT(DISTINCT webhook_name) > 5\nORDER BY request_count DESC;",
+        "additionalFields": {}
+      },
+      "id": "check-suspicious-ips",
+      "name": "Check Suspicious IPs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        480,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-creds",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  workflow_id,\n  COUNT(CASE WHEN status = 'failed' THEN 1 END) as failure_count,\n  COUNT(*) as total_executions,\n  ROUND((COUNT(CASE WHEN status = 'failed' THEN 1 END)::float / COUNT(*)) * 100, 2) as failure_rate,\n  MAX(created_at) as last_execution\nFROM workflow_metrics \nWHERE created_at >= NOW() - INTERVAL '1 hour'\nGROUP BY workflow_id\nHAVING COUNT(CASE WHEN status = 'failed' THEN 1 END) > 3\nORDER BY failure_count DESC;",
+        "additionalFields": {}
+      },
+      "id": "check-workflow-failures",
+      "name": "Check Workflow Failures",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        480,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-creds",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  ai_service,\n  COUNT(*) as request_count,\n  SUM(input_tokens + output_tokens) as total_tokens,\n  COUNT(CASE WHEN response_time > 30000 THEN 1 END) as slow_requests,\n  MAX(created_at) as last_request\nFROM ai_interaction_logs \nWHERE created_at >= NOW() - INTERVAL '1 hour'\nGROUP BY ai_service\nHAVING COUNT(*) > 100 OR COUNT(CASE WHEN response_time > 30000 THEN 1 END) > 5\nORDER BY request_count DESC;",
+        "additionalFields": {}
+      },
+      "id": "check-ai-anomalies",
+      "name": "Check AI Usage Anomalies",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        480,
+        600
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-creds",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Analyze security threats and anomalies\nconst suspiciousIPs = $node[\"Check Suspicious IPs\"].json || [];\nconst workflowFailures = $node[\"Check Workflow Failures\"].json || [];\nconst aiAnomalies = $node[\"Check AI Usage Anomalies\"].json || [];\n\nconst threats = [];\nconst warnings = [];\nconst insights = [];\n\n// Analyze suspicious IP activity\nsuspiciousIPs.forEach(ip => {\n  const severity = ip.request_count > 200 ? 'critical' : ip.request_count > 100 ? 'high' : 'medium';\n  \n  threats.push({\n    type: 'suspicious_ip',\n    severity,\n    source: ip.source_ip,\n    description: `IP ${ip.source_ip} made ${ip.request_count} requests to ${ip.unique_endpoints} different endpoints`,\n    details: {\n      requestCount: ip.request_count,\n      uniqueEndpoints: ip.unique_endpoints,\n      endpointsAccessed: ip.endpoints_accessed,\n      lastRequest: ip.last_request\n    },\n    recommendations: [\n      severity === 'critical' ? 'Consider blocking this IP immediately' : 'Monitor this IP closely',\n      'Review access logs for suspicious patterns',\n      'Check if this is legitimate automated traffic'\n    ]\n  });\n});\n\n// Analyze workflow failures\nworkflowFailures.forEach(workflow => {\n  const severity = workflow.failure_rate > 50 ? 'high' : workflow.failure_rate > 25 ? 'medium' : 'low';\n  \n  warnings.push({\n    type: 'workflow_failure',\n    severity,\n    workflow: workflow.workflow_id,\n    description: `Workflow ${workflow.workflow_id} has ${workflow.failure_count} failures (${workflow.failure_rate}% failure rate)`,\n    details: {\n      failureCount: workflow.failure_count,\n      totalExecutions: workflow.total_executions,\n      failureRate: workflow.failure_rate,\n      lastExecution: workflow.last_execution\n    },\n    recommendations: [\n      'Investigate workflow configuration and dependencies',\n      'Check for resource constraints or external service issues',\n      'Consider implementing better error handling'\n    ]\n  });\n});\n\n// Analyze AI usage anomalies\naiAnomalies.forEach(ai => {\n  const severity = ai.request_count > 500 ? 'high' : ai.slow_requests > 10 ? 'medium' : 'low';\n  \n  warnings.push({\n    type: 'ai_anomaly',\n    severity,\n    service: ai.ai_service,\n    description: `AI service ${ai.ai_service} has unusual usage: ${ai.request_count} requests, ${ai.slow_requests} slow responses`,\n    details: {\n      requestCount: ai.request_count,\n      totalTokens: ai.total_tokens,\n      slowRequests: ai.slow_requests,\n      lastRequest: ai.last_request\n    },\n    recommendations: [\n      ai.request_count > 500 ? 'Investigate potential abuse or runaway processes' : 'Monitor for performance issues',\n      'Check if usage patterns are legitimate',\n      'Consider implementing rate limiting'\n    ]\n  });\n});\n\n// Generate security insights\nif (suspiciousIPs.length > 0) {\n  insights.push(`Detected ${suspiciousIPs.length} suspicious IP addresses with high activity`);\n}\n\nif (workflowFailures.length > 0) {\n  insights.push(`${workflowFailures.length} workflows showing high failure rates`);\n}\n\nif (aiAnomalies.length > 0) {\n  insights.push(`AI usage anomalies detected across ${aiAnomalies.length} services`);\n}\n\n// Calculate security score\nconst criticalThreats = threats.filter(t => t.severity === 'critical').length;\nconst highSeverityIssues = [...threats, ...warnings].filter(i => i.severity === 'high' || i.severity === 'critical').length;\nconst totalIssues = threats.length + warnings.length;\n\nlet securityScore = 100;\nif (criticalThreats > 0) securityScore -= criticalThreats * 30;\nif (highSeverityIssues > 0) securityScore -= (highSeverityIssues - criticalThreats) * 15;\nif (totalIssues > 0) securityScore -= (totalIssues - highSeverityIssues) * 5;\n\nsecurityScore = Math.max(0, securityScore);\n\n// Determine overall security status\nlet securityStatus = 'secure';\nif (criticalThreats > 0) {\n  securityStatus = 'critical';\n} else if (highSeverityIssues > 0) {\n  securityStatus = 'warning';\n} else if (totalIssues > 0) {\n  securityStatus = 'minor_issues';\n}\n\nreturn {\n  timestamp: new Date().toISOString(),\n  securityStatus,\n  securityScore,\n  summary: {\n    threatsDetected: threats.length,\n    warningsRaised: warnings.length,\n    criticalIssues: criticalThreats,\n    highSeverityIssues,\n    totalIssues\n  },\n  threats,\n  warnings,\n  insights,\n  recommendations: [\n    ...threats.flatMap(t => t.recommendations),\n    ...warnings.flatMap(w => w.recommendations)\n  ].filter((rec, index, arr) => arr.indexOf(rec) === index) // Remove duplicates\n};"
+      },
+      "id": "analyze-security-threats",
+      "name": "Analyze Security Threats",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.securityStatus }}",
+              "rightValue": "critical",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "is-critical-threat",
+      "name": "Critical Threat?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  text: \"🚨 CRITICAL SECURITY ALERT\",\n  blocks: [\n    {\n      type: 'header',\n      text: {\n        type: 'plain_text',\n        text: '🚨 CRITICAL SECURITY ALERT'\n      }\n    },\n    {\n      type: 'section',\n      fields: [\n        {\n          type: 'mrkdwn',\n          text: `*Security Status:* ${$json.securityStatus.toUpperCase()}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Security Score:* ${$json.securityScore}/100`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Critical Issues:* ${$json.summary.criticalIssues}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Total Threats:* ${$json.summary.threatsDetected}`\n        }\n      ]\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Critical Threats:*\\n${$json.threats.filter(t => t.severity === 'critical').map(threat => \n          `• ${threat.type}: ${threat.description}`\n        ).join('\\n')}`\n      }\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Immediate Actions Required:*\\n${$json.recommendations.slice(0, 5).map((rec, index) => \n          `${index + 1}. ${rec}`\n        ).join('\\n')}`\n      }\n    },\n    {\n      type: 'context',\n      elements: [\n        {\n          type: 'mrkdwn',\n          text: `Alert generated: ${new Date($json.timestamp).toLocaleString()}`\n        }\n      ]\n    }\n  ]\n}) }}"
+      },
+      "id": "send-critical-alert",
+      "name": "Send Critical Security Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1140,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.summary.totalIssues }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            },
+            {
+              "leftValue": "={{ $json.securityStatus }}",
+              "rightValue": "critical",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "has-warnings",
+      "name": "Has Warnings?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  text: \"⚠️ Security Warnings Detected\",\n  blocks: [\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*⚠️ Security Warnings Detected*\\n\\n*Security Score:* ${$json.securityScore}/100\\n*Status:* ${$json.securityStatus}\\n*Issues:* ${$json.summary.totalIssues} (${$json.summary.highSeverityIssues} high severity)`\n      }\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Key Issues:*\\n${[...$json.threats.slice(0, 3), ...$json.warnings.slice(0, 3)].map(issue => \n          `• ${issue.severity.toUpperCase()}: ${issue.description}`\n        ).join('\\n')}`\n      }\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Insights:*\\n${$json.insights.map(insight => `• ${insight}`).join('\\n')}`\n      }\n    },\n    {\n      type: 'context',\n      elements: [\n        {\n          type: 'mrkdwn',\n          text: `${new Date($json.timestamp).toLocaleString()} | Security monitoring active`\n        }\n      ]\n    }\n  ]\n}) }}"
+      },
+      "id": "send-warning-alert",
+      "name": "Send Security Warning",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1140,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO security_alerts (timestamp, security_status, security_score, critical_issues, high_severity_issues, total_issues, threats_detected, warnings_raised, alert_details) VALUES ('{{ $json.timestamp }}', '{{ $json.securityStatus }}', {{ $json.securityScore }}, {{ $json.summary.criticalIssues }}, {{ $json.summary.highSeverityIssues }}, {{ $json.summary.totalIssues }}, {{ $json.summary.threatsDetected }}, {{ $json.summary.warningsRaised }}, '{{ JSON.stringify({ threats: $json.threats, warnings: $json.warnings, insights: $json.insights }).replace(/'/g, \"''\") }}');",
+        "additionalFields": {}
+      },
+      "id": "store-security-data",
+      "name": "Store Security Data",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1360,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-creds",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Auto-remediation for certain threat types\nconst threats = $json.threats || [];\nconst autoActions = [];\n\n// Check for IPs that should be blocked\nconst criticalIPs = threats\n  .filter(t => t.type === 'suspicious_ip' && t.severity === 'critical')\n  .map(t => t.source);\n\nif (criticalIPs.length > 0) {\n  autoActions.push({\n    type: 'ip_blocking',\n    action: 'block_ips',\n    targets: criticalIPs,\n    reason: 'Critical threat level - excessive requests detected'\n  });\n}\n\n// Check for workflows that should be disabled\nconst failingWorkflows = $json.warnings\n  .filter(w => w.type === 'workflow_failure' && w.details.failureRate > 75)\n  .map(w => w.workflow);\n\nif (failingWorkflows.length > 0) {\n  autoActions.push({\n    type: 'workflow_management',\n    action: 'disable_workflows',\n    targets: failingWorkflows,\n    reason: 'High failure rate detected - potential security risk'\n  });\n}\n\nreturn {\n  ...($json),\n  autoRemediation: {\n    enabled: autoActions.length > 0,\n    actions: autoActions,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "auto-remediation",
+      "name": "Auto-Remediation Logic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.autoRemediation.enabled }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "should-auto-remediate",
+      "name": "Auto-Remediation Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  text: \"🛡️ Auto-Remediation Triggered\",\n  blocks: [\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*🛡️ Automated Security Response Triggered*\\n\\n*Actions Taken:*\\n${$json.autoRemediation.actions.map(action => \n          `• ${action.type}: ${action.action}\\n  Targets: ${Array.isArray(action.targets) ? action.targets.join(', ') : action.targets}\\n  Reason: ${action.reason}`\n        ).join('\\n\\n')}`\n      }\n    },\n    {\n      type: 'context',\n      elements: [\n        {\n          type: 'mrkdwn',\n          text: `Auto-remediation executed at ${new Date($json.autoRemediation.timestamp).toLocaleString()}`\n        }\n      ]\n    }\n  ]\n}) }}"
+      },
+      "id": "notify-auto-remediation",
+      "name": "Notify Auto-Remediation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1800,
+        300
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Security Check Schedule": {
+      "main": [
+        [
+          {
+            "node": "Check Suspicious IPs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Workflow Failures",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check AI Usage Anomalies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Suspicious IPs": {
+      "main": [
+        [
+          {
+            "node": "Analyze Security Threats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Workflow Failures": {
+      "main": [
+        [
+          {
+            "node": "Analyze Security Threats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check AI Usage Anomalies": {
+      "main": [
+        [
+          {
+            "node": "Analyze Security Threats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Security Threats": {
+      "main": [
+        [
+          {
+            "node": "Critical Threat?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Has Warnings?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Store Security Data",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Auto-Remediation Logic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Critical Threat?": {
+      "main": [
+        [
+          {
+            "node": "Send Critical Security Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Warnings?": {
+      "main": [
+        [
+          {
+            "node": "Send Security Warning",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-Remediation Logic": {
+      "main": [
+        [
+          {
+            "node": "Auto-Remediation Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-Remediation Needed?": {
+      "main": [
+        [
+          {
+            "node": "Notify Auto-Remediation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "security-monitoring-workflow",
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "infrastructure",
+      "name": "Infrastructure"
+    },
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "security",
+      "name": "Security"
+    }
+  ]
+}

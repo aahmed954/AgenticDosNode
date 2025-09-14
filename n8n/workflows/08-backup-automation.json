@@ -1,0 +1,482 @@
+{
+  "name": "Backup Automation - Databases & Data Protection",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "value": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "backup-trigger",
+      "name": "Daily Backup Schedule",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Define backup configuration\nconst backupConfig = {\n  timestamp: new Date().toISOString(),\n  backupId: `backup_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,\n  databases: [\n    {\n      name: 'postgresql',\n      type: 'postgres',\n      host: 'postgres-n8n',\n      port: 5432,\n      database: 'n8n',\n      user: 'n8n',\n      tables: ['workflow_metrics', 'ai_interaction_logs', 'webhook_logs', 'health_checks', 'cost_tracking', 'security_alerts'],\n      priority: 'high'\n    }\n  ],\n  vectorDatabases: [\n    {\n      name: 'qdrant',\n      type: 'qdrant',\n      url: process.env.VECTOR_DB_URL || 'http://qdrant:6333',\n      collections: ['documents'],\n      priority: 'high'\n    }\n  ],\n  files: [\n    {\n      name: 'n8n-workflows',\n      path: '/home/node/.n8n',\n      type: 'directory',\n      priority: 'critical'\n    },\n    {\n      name: 'n8n-config',\n      path: '/tmp/config',\n      type: 'directory',\n      priority: 'high'\n    }\n  ],\n  retention: {\n    daily: 7,\n    weekly: 4,\n    monthly: 12\n  },\n  storage: {\n    local: '/tmp/backups',\n    remote: {\n      type: 's3',\n      bucket: process.env.BACKUP_S3_BUCKET || 'n8n-backups',\n      prefix: 'n8n-agentic-stack'\n    }\n  }\n};\n\nreturn backupConfig;"
+      },
+      "id": "define-backup-config",
+      "name": "Define Backup Configuration",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "command": "mkdir -p {{ $json.storage.local }}/{{ $json.backupId }}",
+        "options": {}
+      },
+      "id": "create-backup-directory",
+      "name": "Create Backup Directory",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        700,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-databases",
+      "name": "Split Database Backups",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        700,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "command": "PGPASSWORD={{ $env.N8N_POSTGRES_PASSWORD }} pg_dump -h {{ $json.host }} -p {{ $json.port }} -U {{ $json.user }} -d {{ $json.database }} --no-owner --no-privileges -f {{ $node[\"Define Backup Configuration\"].json.storage.local }}/{{ $node[\"Define Backup Configuration\"].json.backupId }}/{{ $json.name }}_{{ new Date().toISOString().split('T')[0] }}.sql",
+        "options": {}
+      },
+      "id": "backup-postgres",
+      "name": "Backup PostgreSQL",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}/collections/{{ $json.collections[0] }}/snapshots",
+        "options": {}
+      },
+      "id": "create-vector-snapshot",
+      "name": "Create Vector DB Snapshot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        920,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process backup results and prepare for aggregation\nconst backupConfig = $node[\"Define Backup Configuration\"].json;\nconst dbBackupResults = $input.all().filter(item => item.json.command);\nconst vectorBackupResults = $input.all().filter(item => item.json.url);\n\nconst results = {\n  backupId: backupConfig.backupId,\n  timestamp: backupConfig.timestamp,\n  databases: {\n    completed: dbBackupResults.length,\n    total: backupConfig.databases.length,\n    success: dbBackupResults.filter(r => r.json.exitCode === 0).length,\n    failed: dbBackupResults.filter(r => r.json.exitCode !== 0).length\n  },\n  vectorDatabases: {\n    completed: vectorBackupResults.length,\n    total: backupConfig.vectorDatabases.length,\n    success: vectorBackupResults.filter(r => r.json.statusCode === 200).length,\n    failed: vectorBackupResults.filter(r => r.json.statusCode !== 200).length\n  },\n  files: {\n    pending: backupConfig.files.length\n  },\n  storage: backupConfig.storage\n};\n\n// Calculate backup size (simplified)\nconst estimatedSize = {\n  databases: results.databases.success * 10, // MB estimate\n  vectorDbs: results.vectorDatabases.success * 50, // MB estimate\n  files: 100 // MB estimate\n};\n\nresults.estimatedSizeMB = estimatedSize.databases + estimatedSize.vectorDbs + estimatedSize.files;\n\nreturn results;"
+      },
+      "id": "aggregate-backup-results",
+      "name": "Aggregate Backup Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-file-backups",
+      "name": "Split File Backups",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "command": "tar -czf {{ $node[\"Aggregate Backup Results\"].json.storage.local }}/{{ $node[\"Aggregate Backup Results\"].json.backupId }}/{{ $json.name }}_{{ new Date().toISOString().split('T')[0] }}.tar.gz -C $(dirname {{ $json.path }}) $(basename {{ $json.path }})",
+        "options": {}
+      },
+      "id": "backup-files",
+      "name": "Backup Files & Directories",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1580,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "command": "du -sh {{ $node[\"Aggregate Backup Results\"].json.storage.local }}/{{ $node[\"Aggregate Backup Results\"].json.backupId }} | cut -f1",
+        "options": {}
+      },
+      "id": "calculate-backup-size",
+      "name": "Calculate Backup Size",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1800,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "command": "aws s3 sync {{ $node[\"Aggregate Backup Results\"].json.storage.local }}/{{ $node[\"Aggregate Backup Results\"].json.backupId }} s3://{{ $node[\"Aggregate Backup Results\"].json.storage.remote.bucket }}/{{ $node[\"Aggregate Backup Results\"].json.storage.remote.prefix }}/{{ $node[\"Aggregate Backup Results\"].json.backupId }} --region us-east-1",
+        "options": {}
+      },
+      "id": "upload-to-s3",
+      "name": "Upload to S3",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2020,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate backup completion report\nconst backupResults = $node[\"Aggregate Backup Results\"].json;\nconst fileBackupResults = $input.all().filter(item => item.json.command && item.json.command.includes('tar'));\nconst backupSize = $node[\"Calculate Backup Size\"].json.stdout.trim();\nconst s3Upload = $node[\"Upload to S3\"].json;\n\nconst finalResults = {\n  ...backupResults,\n  files: {\n    completed: fileBackupResults.length,\n    total: backupResults.files.pending,\n    success: fileBackupResults.filter(r => r.json.exitCode === 0).length,\n    failed: fileBackupResults.filter(r => r.json.exitCode !== 0).length\n  },\n  actualSizeMB: backupSize,\n  upload: {\n    success: s3Upload.exitCode === 0,\n    remote_location: `s3://${backupResults.storage.remote.bucket}/${backupResults.storage.remote.prefix}/${backupResults.backupId}`,\n    upload_time: new Date().toISOString()\n  },\n  duration: Date.now() - new Date(backupResults.timestamp).getTime(),\n  completedAt: new Date().toISOString()\n};\n\n// Calculate overall success rate\nconst totalItems = finalResults.databases.total + finalResults.vectorDatabases.total + finalResults.files.total;\nconst successfulItems = finalResults.databases.success + finalResults.vectorDatabases.success + finalResults.files.success;\nfinalResults.successRate = Math.round((successfulItems / totalItems) * 100);\n\n// Determine backup status\nfinalResults.status = finalResults.successRate === 100 ? 'success' : \n                     finalResults.successRate >= 80 ? 'partial_success' : 'failed';\n\n// Generate summary\nfinalResults.summary = {\n  total_items: totalItems,\n  successful_items: successfulItems,\n  failed_items: totalItems - successfulItems,\n  backup_size: backupSize,\n  storage_locations: [\n    `local: ${backupResults.storage.local}/${backupResults.backupId}`,\n    finalResults.upload.remote_location\n  ]\n};\n\nreturn finalResults;"
+      },
+      "id": "generate-backup-report",
+      "name": "Generate Backup Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO backup_logs (backup_id, timestamp, status, success_rate, total_items, successful_items, failed_items, backup_size, duration_ms, remote_location, completed_at) VALUES ('{{ $json.backupId }}', '{{ $json.timestamp }}', '{{ $json.status }}', {{ $json.successRate }}, {{ $json.summary.total_items }}, {{ $json.summary.successful_items }}, {{ $json.summary.failed_items }}, '{{ $json.actualSizeMB }}', {{ $json.duration }}, '{{ $json.upload.remote_location }}', '{{ $json.completedAt }}');",
+        "additionalFields": {}
+      },
+      "id": "log-backup-results",
+      "name": "Log Backup Results",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2460,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-creds",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  text: `${$json.status === 'success' ? '✅' : $json.status === 'partial_success' ? '⚠️' : '❌'} Backup ${$json.status === 'success' ? 'Completed' : $json.status === 'partial_success' ? 'Partially Completed' : 'Failed'}`,\n  blocks: [\n    {\n      type: 'header',\n      text: {\n        type: 'plain_text',\n        text: `${$json.status === 'success' ? '✅' : $json.status === 'partial_success' ? '⚠️' : '❌'} Backup ${$json.status === 'success' ? 'Completed' : $json.status === 'partial_success' ? 'Partially Completed' : 'Failed'}`\n      }\n    },\n    {\n      type: 'section',\n      fields: [\n        {\n          type: 'mrkdwn',\n          text: `*Backup ID:* ${$json.backupId}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Success Rate:* ${$json.successRate}%`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Backup Size:* ${$json.actualSizeMB}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Duration:* ${Math.round($json.duration / 1000 / 60)} minutes`\n        }\n      ]\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Backup Summary:*\\n• Databases: ${$json.databases.success}/${$json.databases.total} successful\\n• Vector DBs: ${$json.vectorDatabases.success}/${$json.vectorDatabases.total} successful\\n• Files: ${$json.files.success}/${$json.files.total} successful`\n      }\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Storage Locations:*\\n• Local: ${$json.storage.local}/${$json.backupId}\\n• Remote: ${$json.upload.remote_location}\\n• Upload Status: ${$json.upload.success ? '✅ Success' : '❌ Failed'}`\n      }\n    },\n    {\n      type: 'context',\n      elements: [\n        {\n          type: 'mrkdwn',\n          text: `Completed: ${new Date($json.completedAt).toLocaleString()}`\n        }\n      ]\n    }\n  ]\n}) }}"
+      },
+      "id": "send-backup-notification",
+      "name": "Send Backup Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2460,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "command": "find {{ $node[\"Define Backup Configuration\"].json.storage.local }} -type d -name 'backup_*' -mtime +{{ $node[\"Define Backup Configuration\"].json.retention.daily }} -exec rm -rf {} + 2>/dev/null || true",
+        "options": {}
+      },
+      "id": "cleanup-old-backups",
+      "name": "Cleanup Old Local Backups",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2680,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "command": "aws s3 ls s3://{{ $node[\"Generate Backup Report\"].json.storage.remote.bucket }}/{{ $node[\"Generate Backup Report\"].json.storage.remote.prefix }}/ --recursive | awk '$1 < \"'$(date -d \"{{ $node[\"Define Backup Configuration\"].json.retention.monthly }} months ago\" '+%Y-%m-%d')'\" {print $4}' | xargs -I {} aws s3 rm s3://{{ $node[\"Generate Backup Report\"].json.storage.remote.bucket }}/{} || true",
+        "options": {}
+      },
+      "id": "cleanup-old-remote-backups",
+      "name": "Cleanup Old Remote Backups",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2680,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "backup-error-handler",
+      "name": "Backup Error Handler",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        480,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  text: \"❌ Backup Process Failed\",\n  blocks: [\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*❌ Backup Process Failed*\\n\\n*Error:* ${$json.error || 'Unknown error occurred'}\\n*Time:* ${new Date().toLocaleString()}\\n*Execution ID:* ${$execution.id}`\n      }\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: '*Immediate Actions Required:*\\n• Check backup system health\\n• Verify storage availability\\n• Review error logs\\n• Consider manual backup if critical'\n      }\n    }\n  ]\n}) }}"
+      },
+      "id": "send-backup-error-alert",
+      "name": "Send Backup Error Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        700,
+        700
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily Backup Schedule": {
+      "main": [
+        [
+          {
+            "node": "Define Backup Configuration",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Backup Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Define Backup Configuration": {
+      "main": [
+        [
+          {
+            "node": "Create Backup Directory",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split Database Backups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Database Backups": {
+      "main": [
+        [
+          {
+            "node": "Backup PostgreSQL",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Create Vector DB Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backup PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "Split Database Backups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Vector DB Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Backup Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Backup Results": {
+      "main": [
+        [
+          {
+            "node": "Split File Backups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split File Backups": {
+      "main": [
+        [
+          {
+            "node": "Backup Files & Directories",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backup Files & Directories": {
+      "main": [
+        [
+          {
+            "node": "Split File Backups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Backup Size": {
+      "main": [
+        [
+          {
+            "node": "Upload to S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to S3": {
+      "main": [
+        [
+          {
+            "node": "Generate Backup Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Backup Report": {
+      "main": [
+        [
+          {
+            "node": "Log Backup Results",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Backup Notification",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Cleanup Old Local Backups",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Cleanup Old Remote Backups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backup Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Send Backup Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "backup-automation-workflow",
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "infrastructure",
+      "name": "Infrastructure"
+    },
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "backup",
+      "name": "Backup"
+    }
+  ]
+}

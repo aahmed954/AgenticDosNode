@@ -1,0 +1,35 @@
+# Core dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+python-multipart==0.0.6
+
+# LangChain and LangGraph
+langchain==0.1.0
+langgraph==0.0.26
+langchain-anthropic==0.1.1
+langchain-openai==0.0.5
+langchain-community==0.0.10
+
+# Vector stores and embeddings
+qdrant-client==1.7.0
+sentence-transformers==2.2.2
+
+# Database
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.23
+
+# Redis
+redis==5.0.1
+
+# Monitoring
+prometheus-client==0.19.0
+
+# HTTP client
+httpx==0.25.2
+
+# Utilities
+python-dotenv==1.0.0
+tenacity==8.2.3
+numpy==1.24.3

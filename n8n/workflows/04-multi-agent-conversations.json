@@ -1,0 +1,571 @@
+{
+  "name": "Multi-Agent Conversations - AI Model Routing",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-chat",
+        "options": {}
+      },
+      "id": "ai-chat-webhook",
+      "name": "AI Chat Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        260,
+        300
+      ],
+      "webhookId": "ai-chat-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse and validate incoming chat request\nconst payload = $json.body;\n\nif (!payload.message) {\n  throw new Error('Message is required');\n}\n\nconst request = {\n  message: payload.message,\n  conversationId: payload.conversationId || `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,\n  userId: payload.userId || 'anonymous',\n  context: payload.context || {},\n  preferences: {\n    model: payload.model || 'auto',\n    temperature: payload.temperature || 0.7,\n    maxTokens: payload.maxTokens || 1000,\n    requireSources: payload.requireSources || false,\n    useRAG: payload.useRAG || false,\n    language: payload.language || 'en'\n  },\n  metadata: {\n    timestamp: new Date().toISOString(),\n    userAgent: payload.userAgent || '',\n    sessionId: payload.sessionId || '',\n    source: payload.source || 'api'\n  }\n};\n\n// Analyze message characteristics for routing\nconst messageAnalysis = {\n  length: request.message.length,\n  wordCount: request.message.split(/\\s+/).length,\n  hasCode: /```|`[^`]+`|function\\s*\\(|class\\s+\\w+|import\\s+\\w+/.test(request.message),\n  hasMath: /\\$\\$|\\\\\\(|\\\\\\[|\\d+\\s*[+\\-*/]\\s*\\d+|integral|derivative|equation/.test(request.message),\n  hasData: /data|dataset|analysis|statistics|chart|graph|visualization/.test(request.message.toLowerCase()),\n  isCreative: /write|create|story|poem|creative|imagine|design/.test(request.message.toLowerCase()),\n  isFactual: /what is|who is|when did|where is|how many|definition|explain/.test(request.message.toLowerCase()),\n  isConversational: /hello|hi|how are you|thank you|please|sorry/.test(request.message.toLowerCase()),\n  isComplex: request.message.length > 500 || request.message.split('?').length > 2,\n  language: detectLanguage(request.message)\n};\n\nfunction detectLanguage(text) {\n  // Simple language detection (would use proper library in production)\n  if (/[\\u4e00-\\u9fff]/.test(text)) return 'zh';\n  if (/[\\u3040-\\u309f\\u30a0-\\u30ff]/.test(text)) return 'ja';\n  if (/[\\u0600-\\u06ff]/.test(text)) return 'ar';\n  if (/[\\u0400-\\u04ff]/.test(text)) return 'ru';\n  if (/\\b(el|la|los|las|un|una)\\b/.test(text.toLowerCase())) return 'es';\n  if (/\\b(le|la|les|des|du|de)\\b/.test(text.toLowerCase())) return 'fr';\n  if (/\\b(der|die|das|ein|eine)\\b/.test(text.toLowerCase())) return 'de';\n  return 'en';\n}\n\nreturn {\n  request,\n  messageAnalysis\n};"
+      },
+      "id": "parse-chat-request",
+      "name": "Parse Chat Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Intelligent routing logic to select the best AI model\nconst { request, messageAnalysis } = $json;\n\n// Define model capabilities and costs\nconst models = {\n  'claude-3-sonnet': {\n    name: 'Claude 3 Sonnet',\n    strengths: ['reasoning', 'analysis', 'writing', 'code'],\n    cost: 'high',\n    maxTokens: 4096,\n    endpoint: process.env.CLAUDE_PROXY_URL + '/v1/messages',\n    good_for: ['complex reasoning', 'long-form content', 'code review']\n  },\n  'claude-3-haiku': {\n    name: 'Claude 3 Haiku',\n    strengths: ['speed', 'efficiency', 'simple tasks'],\n    cost: 'low',\n    maxTokens: 2048,\n    endpoint: process.env.CLAUDE_PROXY_URL + '/v1/messages',\n    good_for: ['quick responses', 'simple questions', 'chat']\n  },\n  'gpt-4': {\n    name: 'GPT-4',\n    strengths: ['reasoning', 'math', 'analysis'],\n    cost: 'high',\n    maxTokens: 3000,\n    endpoint: 'https://api.openai.com/v1/chat/completions',\n    good_for: ['complex analysis', 'mathematical problems']\n  },\n  'gpt-3.5-turbo': {\n    name: 'GPT-3.5 Turbo',\n    strengths: ['speed', 'general purpose', 'coding'],\n    cost: 'medium',\n    maxTokens: 2048,\n    endpoint: 'https://api.openai.com/v1/chat/completions',\n    good_for: ['general chat', 'coding help', 'quick tasks']\n  }\n};\n\nlet selectedModel = 'claude-3-haiku'; // default\nlet routingReason = 'Default selection';\nlet confidence = 0.5;\n\n// Auto-routing logic\nif (request.preferences.model === 'auto') {\n  const scores = {};\n  \n  // Score each model based on message characteristics\n  Object.keys(models).forEach(modelKey => {\n    let score = 0;\n    const model = models[modelKey];\n    \n    // Length and complexity scoring\n    if (messageAnalysis.isComplex) {\n      if (model.strengths.includes('reasoning')) score += 30;\n      if (model.cost === 'high') score += 20;\n    } else {\n      if (model.cost === 'low') score += 25;\n      if (model.strengths.includes('speed')) score += 20;\n    }\n    \n    // Content type scoring\n    if (messageAnalysis.hasCode) {\n      if (model.strengths.includes('code')) score += 25;\n      if (modelKey.includes('gpt')) score += 15; // GPT models good for coding\n    }\n    \n    if (messageAnalysis.hasMath) {\n      if (modelKey === 'gpt-4') score += 30; // GPT-4 excels at math\n      if (model.strengths.includes('reasoning')) score += 20;\n    }\n    \n    if (messageAnalysis.isCreative) {\n      if (modelKey.includes('claude')) score += 25; // Claude good for creative tasks\n      if (model.cost === 'high') score += 15;\n    }\n    \n    if (messageAnalysis.isFactual && messageAnalysis.wordCount < 50) {\n      if (model.strengths.includes('speed')) score += 20;\n      if (model.cost === 'low') score += 15;\n    }\n    \n    if (messageAnalysis.isConversational) {\n      if (model.cost === 'low') score += 20;\n      if (model.strengths.includes('efficiency')) score += 15;\n    }\n    \n    // Token length considerations\n    if (messageAnalysis.wordCount > 200) {\n      if (model.maxTokens >= 3000) score += 20;\n    }\n    \n    scores[modelKey] = score;\n  });\n  \n  // Select model with highest score\n  const sortedModels = Object.entries(scores).sort((a, b) => b[1] - a[1]);\n  selectedModel = sortedModels[0][0];\n  confidence = sortedModels[0][1] / 100;\n  \n  routingReason = `Auto-selected based on: ${messageAnalysis.isComplex ? 'complexity' : 'simplicity'}, ` +\n    `${messageAnalysis.hasCode ? 'code content' : ''} ${messageAnalysis.hasMath ? 'mathematical content' : ''} ` +\n    `${messageAnalysis.isCreative ? 'creative request' : ''} (score: ${sortedModels[0][1]})`;\n    \n} else if (models[request.preferences.model]) {\n  selectedModel = request.preferences.model;\n  routingReason = 'User-specified model';\n  confidence = 1.0;\n}\n\n// Prepare model-specific request format\nconst modelConfig = models[selectedModel];\nconst isOpenAI = selectedModel.includes('gpt');\nconst isClaude = selectedModel.includes('claude');\n\nlet apiRequest = {};\n\nif (isClaude) {\n  apiRequest = {\n    model: selectedModel,\n    max_tokens: Math.min(request.preferences.maxTokens, modelConfig.maxTokens),\n    messages: [{\n      role: 'user',\n      content: request.message\n    }],\n    temperature: request.preferences.temperature\n  };\n} else if (isOpenAI) {\n  apiRequest = {\n    model: selectedModel,\n    max_tokens: Math.min(request.preferences.maxTokens, modelConfig.maxTokens),\n    messages: [{\n      role: 'user',\n      content: request.message\n    }],\n    temperature: request.preferences.temperature\n  };\n}\n\n// Add conversation context if available\nif (request.context && request.context.previousMessages) {\n  if (isClaude) {\n    apiRequest.messages = [...request.context.previousMessages, apiRequest.messages[0]];\n  } else if (isOpenAI) {\n    apiRequest.messages = [...request.context.previousMessages, apiRequest.messages[0]];\n  }\n}\n\nreturn {\n  selectedModel,\n  modelConfig,\n  apiRequest,\n  routing: {\n    reason: routingReason,\n    confidence,\n    analysis: messageAnalysis\n  },\n  request,\n  endpoint: modelConfig.endpoint\n};"
+      },
+      "id": "route-to-model",
+      "name": "Route to AI Model",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.request.preferences.useRAG }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-rag-needed",
+      "name": "RAG Required?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://sentence-transformers:8080/embeddings",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  texts: [$json.request.message],\n  model: \"all-MiniLM-L6-v2\"\n}) }}"
+      },
+      "id": "generate-query-embedding",
+      "name": "Generate Query Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1140,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.VECTOR_DB_URL }}/collections/documents/points/search",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  vector: $json.embeddings[0],\n  limit: 5,\n  with_payload: true,\n  score_threshold: 0.7\n}) }}"
+      },
+      "id": "search-knowledge-base",
+      "name": "Search Knowledge Base",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1360,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Augment the original request with retrieved knowledge\nconst routingData = $node[\"Route to AI Model\"].json;\nconst searchResults = $json.result || [];\n\n// Filter and process search results\nconst relevantChunks = searchResults\n  .filter(result => result.score > 0.75) // Only high-confidence matches\n  .map(result => ({\n    text: result.payload.text,\n    source: result.payload.fileName,\n    score: result.score,\n    chunkId: result.id\n  }));\n\nlet augmentedMessage = routingData.request.message;\n\nif (relevantChunks.length > 0) {\n  // Create context from retrieved documents\n  const context = relevantChunks\n    .map(chunk => `Source: ${chunk.source}\\nContent: ${chunk.text}`)\n    .join('\\n\\n---\\n\\n');\n    \n  augmentedMessage = `Based on the following context, please answer the user's question:\n\nCONTEXT:\n${context}\n\nUSER QUESTION:\n${routingData.request.message}\n\nPlease provide a comprehensive answer based on the context provided. If the context doesn't contain relevant information, please say so and provide your best general knowledge answer.`;\n}\n\n// Update the API request with augmented message\nconst updatedApiRequest = { ...routingData.apiRequest };\n\nif (routingData.selectedModel.includes('claude')) {\n  updatedApiRequest.messages[updatedApiRequest.messages.length - 1].content = augmentedMessage;\n} else {\n  updatedApiRequest.messages[updatedApiRequest.messages.length - 1].content = augmentedMessage;\n}\n\nreturn {\n  ...routingData,\n  apiRequest: updatedApiRequest,\n  rag: {\n    enabled: true,\n    chunksFound: relevantChunks.length,\n    chunks: relevantChunks,\n    originalMessage: routingData.request.message,\n    augmentedMessage\n  }\n};"
+      },
+      "id": "augment-with-rag",
+      "name": "Augment with RAG",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.selectedModel }}",
+              "rightValue": "claude",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "is-claude-model",
+      "name": "Is Claude Model?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.endpoint }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify($json.apiRequest) }}"
+      },
+      "id": "call-claude-api",
+      "name": "Call Claude API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1140,
+        300
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "claude-api-creds",
+          "name": "Claude API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.endpoint }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify($json.apiRequest) }}"
+      },
+      "id": "call-openai-api",
+      "name": "Call OpenAI API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1140,
+        500
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-api-creds",
+          "name": "OpenAI API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process and format AI response\nconst routingData = $node[\"Route to AI Model\"].json || $node[\"Augment with RAG\"].json;\nconst aiResponse = $json;\n\nlet responseText = '';\nlet usage = {};\nlet model = routingData.selectedModel;\n\n// Parse response based on AI service\nif (model.includes('claude')) {\n  responseText = aiResponse.content?.[0]?.text || '';\n  usage = {\n    inputTokens: aiResponse.usage?.input_tokens || 0,\n    outputTokens: aiResponse.usage?.output_tokens || 0\n  };\n} else if (model.includes('gpt')) {\n  responseText = aiResponse.choices?.[0]?.message?.content || '';\n  usage = {\n    inputTokens: aiResponse.usage?.prompt_tokens || 0,\n    outputTokens: aiResponse.usage?.completion_tokens || 0\n  };\n}\n\n// Calculate estimated cost (simplified pricing)\nconst costPerToken = {\n  'claude-3-sonnet': { input: 0.000003, output: 0.000015 },\n  'claude-3-haiku': { input: 0.00000025, output: 0.00000125 },\n  'gpt-4': { input: 0.00003, output: 0.00006 },\n  'gpt-3.5-turbo': { input: 0.0000005, output: 0.0000015 }\n};\n\nconst pricing = costPerToken[model] || { input: 0, output: 0 };\nconst estimatedCost = (usage.inputTokens * pricing.input) + (usage.outputTokens * pricing.output);\n\n// Prepare response\nconst formattedResponse = {\n  conversationId: routingData.request.conversationId,\n  response: responseText,\n  model: {\n    name: model,\n    displayName: routingData.modelConfig.name,\n    routing: routingData.routing\n  },\n  usage: {\n    ...usage,\n    totalTokens: usage.inputTokens + usage.outputTokens,\n    estimatedCost: Math.round(estimatedCost * 100000) / 100000 // Round to 5 decimal places\n  },\n  rag: routingData.rag || { enabled: false },\n  metadata: {\n    timestamp: new Date().toISOString(),\n    processingTime: $execution.duration,\n    userId: routingData.request.userId,\n    sessionId: routingData.request.metadata.sessionId\n  },\n  success: true\n};\n\n// Add source citations if RAG was used\nif (routingData.rag && routingData.rag.enabled && routingData.rag.chunksFound > 0) {\n  formattedResponse.sources = routingData.rag.chunks.map(chunk => ({\n    title: chunk.source,\n    snippet: chunk.text.substring(0, 200) + '...',\n    relevanceScore: chunk.score\n  }));\n}\n\nreturn formattedResponse;"
+      },
+      "id": "format-response",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO conversation_logs (conversation_id, user_id, message, response, model_used, input_tokens, output_tokens, estimated_cost, rag_enabled, response_time, created_at) VALUES ('{{ $json.conversationId }}', '{{ $json.metadata.userId }}', '{{ $node[\"Route to AI Model\"].json.request.message.replace(/'/g, \"''\") }}', '{{ $json.response.replace(/'/g, \"''\") }}', '{{ $json.model.name }}', {{ $json.usage.inputTokens }}, {{ $json.usage.outputTokens }}, {{ $json.usage.estimatedCost }}, {{ $json.rag.enabled }}, {{ $json.metadata.processingTime }}, '{{ $json.metadata.timestamp }}');",
+        "additionalFields": {}
+      },
+      "id": "log-conversation",
+      "name": "Log Conversation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1580,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-creds",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json, null, 2) }}"
+      },
+      "id": "webhook-response",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1800,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.usage.estimatedCost }}",
+              "rightValue": 0.01,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-high-cost",
+      "name": "High Cost Alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  text: \"💰 High-Cost AI Request\",\n  blocks: [\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*High-Cost AI Request Detected*\\n\\n*Model:* ${$node[\"Format Response\"].json.model.displayName}\\n*Cost:* $${$node[\"Format Response\"].json.usage.estimatedCost}\\n*Tokens:* ${$node[\"Format Response\"].json.usage.totalTokens}\\n*User:* ${$node[\"Format Response\"].json.metadata.userId}\\n*Conversation:* ${$node[\"Format Response\"].json.conversationId}`\n      }\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Query Preview:*\\n${$node[\"Route to AI Model\"].json.request.message.substring(0, 200)}${$node[\"Route to AI Model\"].json.request.message.length > 200 ? '...' : ''}`\n      }\n    }\n  ]\n}) }}"
+      },
+      "id": "send-cost-alert",
+      "name": "Send Cost Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1800,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "error-handler",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        480,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: false,\n  error: $json.error || 'Unknown error occurred',\n  timestamp: new Date().toISOString(),\n  executionId: $execution.id\n}, null, 2) }}"
+      },
+      "id": "error-response",
+      "name": "Send Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        700,
+        600
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "AI Chat Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Chat Request",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Chat Request": {
+      "main": [
+        [
+          {
+            "node": "Route to AI Model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route to AI Model": {
+      "main": [
+        [
+          {
+            "node": "RAG Required?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Is Claude Model?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RAG Required?": {
+      "main": [
+        [
+          {
+            "node": "Generate Query Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Query Embedding": {
+      "main": [
+        [
+          {
+            "node": "Search Knowledge Base",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Knowledge Base": {
+      "main": [
+        [
+          {
+            "node": "Augment with RAG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Augment with RAG": {
+      "main": [
+        [
+          {
+            "node": "Is Claude Model?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Claude Model?": {
+      "main": [
+        [
+          {
+            "node": "Call Claude API",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call OpenAI API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Claude API": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call OpenAI API": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [
+          {
+            "node": "Log Conversation",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "High Cost Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "High Cost Alert?": {
+      "main": [
+        [
+          {
+            "node": "Send Cost Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Send Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "multi-agent-conversations-workflow",
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "ai-workflows",
+      "name": "AI Workflows"
+    },
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "chat-routing",
+      "name": "Chat Routing"
+    }
+  ]
+}

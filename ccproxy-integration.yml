@@ -1,0 +1,138 @@
+# Integration configuration for Claude Code Proxy with existing orchestrator
+# This extends the main docker-compose.secure.yml to include ccproxy
+
+version: '3.8'
+
+services:
+  # Claude Code Proxy integrated with existing security infrastructure
+  ccproxy-secure:
+    build:
+      context: ./ccproxy
+      dockerfile: Dockerfile
+      target: production
+    container_name: ccproxy-secure
+    hostname: ccproxy
+    restart: unless-stopped
+
+    # Enhanced security hardening matching existing infrastructure
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:seccomp-ccproxy.json
+      - apparmor:ccproxy-profile
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100M
+      - /app/tmp:noexec,nosuid,size=50M
+      - /app/logs:nosuid,size=200M
+
+    # Resource limits aligned with existing services
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpu_quota: 50000
+    cpu_period: 100000
+    pids_limit: 100
+    ulimits:
+      nproc: 50
+      nofile:
+        soft: 1024
+        hard: 2048
+
+    # Network integration with existing isolated network
+    networks:
+      ai_isolated:
+        ipv4_address: 172.28.1.60  # Assign IP in existing range
+      tailscale_network:
+        ipv4_address: 172.29.1.60
+    ports:
+      - "127.0.0.1:8000:8000"    # Proxy API
+      - "127.0.0.1:8001:8001"    # Metrics
+
+    # Environment configuration with secrets from Vault
+    environment:
+      # Server configuration
+      - CCPROXY_HOST=0.0.0.0
+      - CCPROXY_PORT=8000
+      - CCPROXY_DEBUG=false
+      - CCPROXY_LOG_LEVEL=INFO
+
+      # Authentication
+      - CCPROXY_AUTH_METHOD=api_key
+      - CCPROXY_API_KEYS=${CCPROXY_API_KEYS}
+
+      # Claude API (from Vault)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_API_BASE=https://api.anthropic.com
+
+      # Rate limiting - conservative for production
+      - CCPROXY_RATE_LIMIT_RPM=30
+      - CCPROXY_RATE_LIMIT_TPM=50000
+      - CCPROXY_CONCURRENT_REQUESTS=5
+
+      # Security
+      - CCPROXY_ENABLE_CORS=false  # Disabled for security
+      - CCPROXY_MAX_REQUEST_SIZE=1048576
+
+      # Integration with existing Redis
+      - REDIS_URL=redis://redis-secure:6379/1
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+
+      # Monitoring integration
+      - CCPROXY_ENABLE_METRICS=true
+      - CCPROXY_LOG_REQUESTS=true
+      - CCPROXY_LOG_RESPONSES=false
+
+    # Volumes for certificate access and logging
+    volumes:
+      - type: bind
+        source: ./certs/ccproxy
+        target: /app/certs
+        read_only: true
+      - type: bind
+        source: ./ccproxy/config
+        target: /app/config
+        read_only: true
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Logging integration with existing system
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels: "service=ccproxy"
+
+    # Dependencies
+    depends_on:
+      - redis-secure
+      - vault
+
+  # WAF/Reverse Proxy update to include ccproxy routing
+  waf-proxy-extended:
+    extends:
+      service: waf-proxy
+    environment:
+      - CCPROXY_BACKEND=http://ccproxy-secure:8000
+    volumes:
+      # Additional nginx config for ccproxy routing
+      - type: bind
+        source: ./nginx-ccproxy.conf
+        target: /etc/nginx/conf.d/ccproxy.conf
+        read_only: true
+
+# Add ccproxy to existing networks
+networks:
+  ai_isolated:
+    external: true
+  tailscale_network:
+    external: true

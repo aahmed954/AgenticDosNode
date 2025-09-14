@@ -1,0 +1,610 @@
+{
+  "name": "Document Processing Pipeline - RAG Embedding & Summarization",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "document-upload",
+        "options": {
+          "binaryData": true
+        }
+      },
+      "id": "document-webhook",
+      "name": "Document Upload Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        260,
+        300
+      ],
+      "webhookId": "document-upload-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and validate uploaded document\nconst files = Object.keys($binary);\n\nif (files.length === 0) {\n  throw new Error('No file uploaded');\n}\n\nconst fileName = files[0];\nconst fileData = $binary[fileName];\n\nif (!fileData) {\n  throw new Error('Invalid file data');\n}\n\n// Extract file information\nconst fileExtension = fileName.toLowerCase().split('.').pop();\nconst supportedTypes = ['pdf', 'docx', 'txt', 'md', 'html', 'rtf'];\n\nif (!supportedTypes.includes(fileExtension)) {\n  throw new Error(`Unsupported file type: ${fileExtension}. Supported types: ${supportedTypes.join(', ')}`);\n}\n\nconst fileSizeKB = Math.round(fileData.data.length / 1024);\nconst maxSizeKB = 10240; // 10MB limit\n\nif (fileSizeKB > maxSizeKB) {\n  throw new Error(`File too large: ${fileSizeKB}KB. Maximum size: ${maxSizeKB}KB`);\n}\n\n// Extract metadata from webhook payload\nconst metadata = {\n  uploadedAt: new Date().toISOString(),\n  fileName: fileName,\n  fileSize: fileSizeKB,\n  fileType: fileExtension,\n  mimeType: fileData.mimeType,\n  source: $json.body?.source || 'webhook',\n  tags: $json.body?.tags || [],\n  category: $json.body?.category || 'general',\n  priority: $json.body?.priority || 'normal',\n  userId: $json.body?.userId || 'anonymous',\n  description: $json.body?.description || ''\n};\n\nreturn {\n  fileName,\n  metadata,\n  processingId: `doc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`\n};"
+      },
+      "id": "validate-document",
+      "name": "Validate Document",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.metadata.fileType }}",
+              "rightValue": "pdf",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-pdf",
+      "name": "Is PDF?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        700,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.metadata.fileType }}",
+              "rightValue": "docx",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-docx",
+      "name": "Is DOCX?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        700,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://tika:9998/tika",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "text/plain"
+            }
+          ]
+        },
+        "sendBinaryData": true,
+        "binaryPropertyName": "={{ $node[\"Validate Document\"].json.fileName }}"
+      },
+      "id": "extract-pdf-text",
+      "name": "Extract PDF Text (Tika)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        920,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://tika:9998/tika",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "text/plain"
+            }
+          ]
+        },
+        "sendBinaryData": true,
+        "binaryPropertyName": "={{ $node[\"Validate Document\"].json.fileName }}"
+      },
+      "id": "extract-docx-text",
+      "name": "Extract DOCX Text (Tika)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract text from simple text-based files\nconst fileName = $node[\"Validate Document\"].json.fileName;\nconst fileData = $binary[fileName];\nconst fileType = $node[\"Validate Document\"].json.metadata.fileType;\n\nif (!fileData) {\n  throw new Error('File data not found');\n}\n\n// Convert binary data to text\nlet extractedText = '';\n\ntry {\n  if (fileType === 'txt' || fileType === 'md') {\n    extractedText = Buffer.from(fileData.data, 'base64').toString('utf8');\n  } else if (fileType === 'html') {\n    const htmlContent = Buffer.from(fileData.data, 'base64').toString('utf8');\n    // Basic HTML tag removal (for simple cases)\n    extractedText = htmlContent.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim();\n  } else {\n    throw new Error(`Unsupported file type for direct extraction: ${fileType}`);\n  }\n} catch (error) {\n  throw new Error(`Failed to extract text: ${error.message}`);\n}\n\nif (!extractedText || extractedText.trim().length === 0) {\n  throw new Error('No text content found in the document');\n}\n\nreturn {\n  extractedText: extractedText.trim(),\n  wordCount: extractedText.split(/\\s+/).length,\n  charCount: extractedText.length\n};"
+      },
+      "id": "extract-simple-text",
+      "name": "Extract Simple Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge text extraction results and prepare for chunking\nconst metadata = $node[\"Validate Document\"].json.metadata;\nconst processingId = $node[\"Validate Document\"].json.processingId;\n\n// Get extracted text from different sources\nlet extractedText = '';\nlet wordCount = 0;\nlet charCount = 0;\n\n// Check which extraction method was used\nif ($node[\"Extract PDF Text (Tika)\"] && $node[\"Extract PDF Text (Tika)\"].json) {\n  extractedText = $node[\"Extract PDF Text (Tika)\"].json;\n} else if ($node[\"Extract DOCX Text (Tika)\"] && $node[\"Extract DOCX Text (Tika)\"].json) {\n  extractedText = $node[\"Extract DOCX Text (Tika)\"].json;\n} else if ($node[\"Extract Simple Text\"] && $node[\"Extract Simple Text\"].json) {\n  const result = $node[\"Extract Simple Text\"].json;\n  extractedText = result.extractedText;\n  wordCount = result.wordCount;\n  charCount = result.charCount;\n}\n\nif (!extractedText || extractedText.trim().length === 0) {\n  throw new Error('No text could be extracted from the document');\n}\n\n// Calculate metrics if not already done\nif (wordCount === 0) {\n  wordCount = extractedText.split(/\\s+/).filter(word => word.length > 0).length;\n  charCount = extractedText.length;\n}\n\n// Clean and normalize text\nconst cleanedText = extractedText\n  .replace(/\\r\\n/g, '\\n')  // Normalize line endings\n  .replace(/\\s+/g, ' ')    // Collapse multiple spaces\n  .replace(/\\n\\s*\\n/g, '\\n\\n')  // Normalize paragraph breaks\n  .trim();\n\n// Chunk text for embedding (aim for ~500 words per chunk)\nconst wordsPerChunk = 500;\nconst overlapWords = 50;\n\nconst words = cleanedText.split(/\\s+/);\nconst chunks = [];\nlet chunkIndex = 0;\n\nfor (let i = 0; i < words.length; i += wordsPerChunk - overlapWords) {\n  const chunkWords = words.slice(i, i + wordsPerChunk);\n  const chunkText = chunkWords.join(' ');\n  \n  if (chunkText.trim().length > 0) {\n    chunks.push({\n      chunkId: `${processingId}_chunk_${chunkIndex}`,\n      index: chunkIndex,\n      text: chunkText,\n      wordCount: chunkWords.length,\n      charCount: chunkText.length,\n      startWord: i,\n      endWord: i + chunkWords.length - 1\n    });\n    chunkIndex++;\n  }\n}\n\nreturn {\n  processingId,\n  metadata,\n  extractedText: cleanedText,\n  textMetrics: {\n    totalWords: wordCount,\n    totalChars: charCount,\n    totalChunks: chunks.length\n  },\n  chunks\n};"
+      },
+      "id": "process-extracted-text",
+      "name": "Process Extracted Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CLAUDE_PROXY_URL }}/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-3-sonnet-20240229\",\n  max_tokens: 1500,\n  messages: [{\n    role: \"user\",\n    content: `Analyze and summarize this document. Provide a comprehensive summary with key insights.\n\n**Document Information:**\n- File: ${$json.metadata.fileName}\n- Type: ${$json.metadata.fileType}\n- Size: ${$json.metadata.fileSize}KB\n- Category: ${$json.metadata.category}\n- Description: ${$json.metadata.description}\n- Words: ${$json.textMetrics.totalWords}\n- Chunks: ${$json.textMetrics.totalChunks}\n\n**Document Content:**\n${$json.extractedText.substring(0, 8000)}${$json.extractedText.length > 8000 ? '\\n\\n[Content truncated for analysis...]' : ''}\n\nProvide:\n\n1. **📋 Executive Summary** (2-3 sentences)\n2. **🔑 Key Topics & Themes** (bullet points)\n3. **💡 Main Insights** (important findings or conclusions)\n4. **📊 Content Structure** (how the document is organized)\n5. **🏷️ Suggested Tags** (5-10 relevant tags for categorization)\n6. **❓ Potential Questions** (3-5 questions this document might answer)\n7. **🎯 Relevance Score** (1-10, how valuable/important is this content)\n\nFormat your response in clear sections with appropriate headings.`\n  }]\n}) }}"
+      },
+      "id": "claude-document-analysis",
+      "name": "Claude Document Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1360,
+        200
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "claude-api-creds",
+          "name": "Claude API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://sentence-transformers:8080/embeddings",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  texts: $json.chunks.map(chunk => chunk.text),\n  model: \"all-MiniLM-L6-v2\"\n}) }}"
+      },
+      "id": "generate-embeddings",
+      "name": "Generate Embeddings",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1360,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare data for vector database storage\nconst documentData = $node[\"Process Extracted Text\"].json;\nconst claudeAnalysis = $node[\"Claude Document Analysis\"].json.content[0].text;\nconst embeddings = $node[\"Generate Embeddings\"].json.embeddings;\n\nif (!embeddings || embeddings.length === 0) {\n  throw new Error('No embeddings generated');\n}\n\nif (embeddings.length !== documentData.chunks.length) {\n  throw new Error(`Embedding count (${embeddings.length}) doesn't match chunk count (${documentData.chunks.length})`);\n}\n\n// Parse Claude's analysis to extract structured data\nconst analysis = {\n  summary: '',\n  keyTopics: [],\n  insights: [],\n  structure: '',\n  suggestedTags: [],\n  potentialQuestions: [],\n  relevanceScore: 5\n};\n\n// Basic parsing of Claude's response (would be more sophisticated in production)\ntry {\n  const lines = claudeAnalysis.split('\\n');\n  let currentSection = '';\n  \n  lines.forEach(line => {\n    const trimmedLine = line.trim();\n    if (trimmedLine.includes('Executive Summary')) {\n      currentSection = 'summary';\n    } else if (trimmedLine.includes('Key Topics')) {\n      currentSection = 'topics';\n    } else if (trimmedLine.includes('Main Insights')) {\n      currentSection = 'insights';\n    } else if (trimmedLine.includes('Suggested Tags')) {\n      currentSection = 'tags';\n    } else if (trimmedLine.includes('Relevance Score')) {\n      const match = trimmedLine.match(/(\\d+)/); \n      if (match) analysis.relevanceScore = parseInt(match[1]);\n    } else if (trimmedLine.startsWith('- ') || trimmedLine.startsWith('* ')) {\n      const content = trimmedLine.substring(2);\n      if (currentSection === 'topics') analysis.keyTopics.push(content);\n      else if (currentSection === 'insights') analysis.insights.push(content);\n      else if (currentSection === 'tags') analysis.suggestedTags.push(content);\n    } else if (trimmedLine && currentSection === 'summary' && !trimmedLine.includes('#')) {\n      analysis.summary += trimmedLine + ' ';\n    }\n  });\n} catch (error) {\n  console.warn('Could not parse Claude analysis:', error.message);\n}\n\n// Prepare vector database points\nconst vectorPoints = documentData.chunks.map((chunk, index) => ({\n  id: chunk.chunkId,\n  vector: embeddings[index],\n  payload: {\n    documentId: documentData.processingId,\n    fileName: documentData.metadata.fileName,\n    chunkIndex: chunk.index,\n    text: chunk.text,\n    wordCount: chunk.wordCount,\n    charCount: chunk.charCount,\n    startWord: chunk.startWord,\n    endWord: chunk.endWord,\n    category: documentData.metadata.category,\n    source: documentData.metadata.source,\n    tags: [...documentData.metadata.tags, ...analysis.suggestedTags.slice(0, 5)],\n    uploadedAt: documentData.metadata.uploadedAt,\n    userId: documentData.metadata.userId,\n    relevanceScore: analysis.relevanceScore\n  }\n}));\n\n// Prepare document metadata for storage\nconst documentMetadata = {\n  processingId: documentData.processingId,\n  fileName: documentData.metadata.fileName,\n  fileType: documentData.metadata.fileType,\n  fileSize: documentData.metadata.fileSize,\n  textMetrics: documentData.textMetrics,\n  analysis: {\n    summary: analysis.summary.trim(),\n    keyTopics: analysis.keyTopics,\n    insights: analysis.insights,\n    suggestedTags: analysis.suggestedTags,\n    relevanceScore: analysis.relevanceScore,\n    fullAnalysis: claudeAnalysis\n  },\n  metadata: documentData.metadata,\n  processedAt: new Date().toISOString(),\n  status: 'completed'\n};\n\nreturn {\n  vectorPoints,\n  documentMetadata,\n  embeddingCount: embeddings.length,\n  totalVectorDimensions: embeddings[0]?.length || 0\n};"
+      },
+      "id": "prepare-vector-data",
+      "name": "Prepare Vector Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.VECTOR_DB_URL }}/collections/documents/points",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  points: $json.vectorPoints\n}) }}"
+      },
+      "id": "store-vectors",
+      "name": "Store Vectors in Qdrant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1800,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO document_metadata (processing_id, file_name, file_type, file_size, word_count, chunk_count, summary, tags, relevance_score, processed_at, user_id, category, status) VALUES ('{{ $json.documentMetadata.processingId }}', '{{ $json.documentMetadata.fileName }}', '{{ $json.documentMetadata.fileType }}', {{ $json.documentMetadata.fileSize }}, {{ $json.documentMetadata.textMetrics.totalWords }}, {{ $json.documentMetadata.textMetrics.totalChunks }}, '{{ $json.documentMetadata.analysis.summary.replace(/'/g, \"''\") }}', '{{ JSON.stringify($json.documentMetadata.analysis.suggestedTags) }}', {{ $json.documentMetadata.analysis.relevanceScore }}, '{{ $json.documentMetadata.processedAt }}', '{{ $json.documentMetadata.metadata.userId }}', '{{ $json.documentMetadata.metadata.category }}', '{{ $json.documentMetadata.status }}');",
+        "additionalFields": {}
+      },
+      "id": "store-document-metadata",
+      "name": "Store Document Metadata",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1800,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-creds",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  text: \"📄 Document Processed Successfully\",\n  blocks: [\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Document Processing Complete*\\n\\n*File:* ${$json.documentMetadata.fileName}\\n*Size:* ${$json.documentMetadata.fileSize}KB\\n*Words:* ${$json.documentMetadata.textMetrics.totalWords}\\n*Chunks:* ${$json.documentMetadata.textMetrics.totalChunks}\\n*Category:* ${$json.documentMetadata.metadata.category}\\n*Relevance:* ${$json.documentMetadata.analysis.relevanceScore}/10`\n      }\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*Summary:*\\n${$json.documentMetadata.analysis.summary.substring(0, 200)}${$json.documentMetadata.analysis.summary.length > 200 ? '...' : ''}`\n      }\n    },\n    {\n      type: 'section',\n      fields: [\n        {\n          type: 'mrkdwn',\n          text: `*Key Topics:*\\n${$json.documentMetadata.analysis.keyTopics.slice(0, 3).map(topic => `• ${topic}`).join('\\n')}`\n        },\n        {\n          type: 'mrkdwn',\n          text: `*Tags:*\\n${$json.documentMetadata.analysis.suggestedTags.slice(0, 5).join(', ')}`\n        }\n      ]\n    },\n    {\n      type: 'context',\n      elements: [\n        {\n          type: 'mrkdwn',\n          text: `Processing ID: ${$json.documentMetadata.processingId} | Vectors: ${$json.embeddingCount}`\n        }\n      ]\n    }\n  ]\n}) }}"
+      },
+      "id": "send-success-notification",
+      "name": "Send Success Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2020,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "error-handler",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        480,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  text: `❌ Document Processing Failed`,\n  blocks: [{\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: `*Document Processing Failed*\\n\\n*Error:* ${$json.error || 'Unknown error'}\\n*File:* ${$json.fileName || 'Unknown'}\\n*Time:* ${new Date().toLocaleString()}\\n*Execution ID:* ${$execution.id}`\n    }\n  }]\n}) }}"
+      },
+      "id": "send-error-notification",
+      "name": "Send Error Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        700,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.VECTOR_DB_URL }}/collections/documents",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={{ JSON.stringify({\n  name: \"documents\",\n  vectors: {\n    size: 384,\n    distance: \"Cosine\"\n  }\n}) }}"
+      },
+      "id": "ensure-collection",
+      "name": "Ensure Collection Exists",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1580,
+        100
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Document Upload Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Document",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Document": {
+      "main": [
+        [
+          {
+            "node": "Is PDF?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Is DOCX?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract Simple Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is PDF?": {
+      "main": [
+        [
+          {
+            "node": "Extract PDF Text (Tika)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is DOCX?": {
+      "main": [
+        [
+          {
+            "node": "Extract DOCX Text (Tika)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PDF Text (Tika)": {
+      "main": [
+        [
+          {
+            "node": "Process Extracted Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract DOCX Text (Tika)": {
+      "main": [
+        [
+          {
+            "node": "Process Extracted Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Simple Text": {
+      "main": [
+        [
+          {
+            "node": "Process Extracted Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Extracted Text": {
+      "main": [
+        [
+          {
+            "node": "Claude Document Analysis",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Generate Embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Document Analysis": {
+      "main": [
+        [
+          {
+            "node": "Prepare Vector Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Embeddings": {
+      "main": [
+        [
+          {
+            "node": "Prepare Vector Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Vector Data": {
+      "main": [
+        [
+          {
+            "node": "Ensure Collection Exists",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Store Vectors in Qdrant",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Store Document Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Vectors in Qdrant": {
+      "main": [
+        [
+          {
+            "node": "Send Success Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Document Metadata": {
+      "main": [
+        [
+          {
+            "node": "Send Success Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Send Error Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ensure Collection Exists": {
+      "main": [
+        [
+          {
+            "node": "Store Vectors in Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "document-processing-rag-workflow",
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "ai-workflows",
+      "name": "AI Workflows"
+    },
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "document-processing",
+      "name": "Document Processing"
+    }
+  ]
+}

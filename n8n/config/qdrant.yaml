@@ -1,0 +1,30 @@
+log_level: INFO
+
+storage:
+  # Where to store all the data
+  storage_path: /qdrant/storage
+
+  # Where to store snapshots
+  snapshots_path: /qdrant/snapshots
+
+service:
+  # Host to bind the service on
+  host: 0.0.0.0
+
+  # HTTP port to bind the service on
+  http_port: 6333
+
+  # gRPC port to bind the service on
+  grpc_port: 6334
+
+# Enable telemetry
+telemetry_disabled: true
+
+cluster:
+  # Use `enabled: true` to run Qdrant in distributed deployment mode
+  enabled: false
+
+# TLS configuration (disable for internal network)
+tls:
+  # Whether to enable TLS
+  enabled: false

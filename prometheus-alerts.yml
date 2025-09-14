@@ -1,0 +1,336 @@
+groups:
+  - name: security_critical
+    interval: 15s
+    rules:
+      # Authentication & Access
+      - alert: BruteForceAttempt
+        expr: rate(auth_failed_attempts_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "Potential brute force attack detected"
+          description: "{{ $value }} failed authentication attempts per second from {{ $labels.source_ip }}"
+          action: "Block source IP and investigate logs"
+
+      - alert: AccountLockout
+        expr: increase(account_lockouts_total[1h]) > 3
+        for: 1m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: "Multiple account lockouts detected"
+          description: "{{ $value }} accounts locked in the last hour"
+
+      - alert: PrivilegeEscalation
+        expr: privilege_escalation_attempts > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "Privilege escalation attempt detected"
+          description: "User {{ $labels.user }} attempted privilege escalation"
+          action: "Immediately investigate and potentially disable account"
+
+      # API Security
+      - alert: APIKeyCompromise
+        expr: api_key_usage_anomaly > 2
+        for: 5m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "Potential API key compromise"
+          description: "API key {{ $labels.key_id }} showing unusual usage pattern"
+          action: "Rotate API key immediately"
+
+      - alert: RateLimitBypass
+        expr: rate(api_requests_total[1m]) > 1000
+        for: 2m
+        labels:
+          severity: high
+          category: security
+        annotations:
+          summary: "API rate limit potentially bypassed"
+          description: "{{ $value }} requests per second from {{ $labels.source }}"
+
+      # Container Security
+      - alert: ContainerEscapeAttempt
+        expr: container_escape_indicators > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "Container escape attempt detected"
+          description: "Container {{ $labels.container_name }} showing escape indicators"
+          action: "Kill container and investigate immediately"
+
+      - alert: UnauthorizedContainerExec
+        expr: unauthorized_container_exec > 0
+        for: 1m
+        labels:
+          severity: high
+          category: security
+        annotations:
+          summary: "Unauthorized container exec detected"
+          description: "Exec into container {{ $labels.container }} by {{ $labels.user }}"
+
+      # AI Execution Security
+      - alert: MaliciousAIOutput
+        expr: ai_malicious_output_detected > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: ai_security
+        annotations:
+          summary: "AI generated potentially malicious output"
+          description: "Session {{ $labels.session_id }} generated suspicious content"
+          action: "Quarantine output and review session"
+
+      - alert: AIExecutionAnomaly
+        expr: |
+          (
+            rate(ai_execution_duration_seconds_sum[5m]) /
+            rate(ai_execution_duration_seconds_count[5m])
+          ) > 60
+        for: 5m
+        labels:
+          severity: warning
+          category: ai_security
+        annotations:
+          summary: "AI execution taking unusually long"
+          description: "Average execution time: {{ $value }}s"
+
+      - alert: PromptInjectionAttempt
+        expr: prompt_injection_detected > 0
+        for: 1m
+        labels:
+          severity: high
+          category: ai_security
+        annotations:
+          summary: "Prompt injection attempt detected"
+          description: "User {{ $labels.user }} attempted prompt injection"
+
+      # Data Security
+      - alert: DataExfiltrationSuspected
+        expr: |
+          (
+            rate(network_transmit_bytes_total[5m]) > 100000000 and
+            rate(vector_db_queries_total[5m]) > 100
+          )
+        for: 5m
+        labels:
+          severity: critical
+          category: data_security
+        annotations:
+          summary: "Potential data exfiltration in progress"
+          description: "High network output ({{ $value }}B/s) with high DB queries"
+          action: "Investigate immediately and consider network isolation"
+
+      - alert: UnauthorizedDataAccess
+        expr: unauthorized_data_access_total > 0
+        for: 1m
+        labels:
+          severity: high
+          category: data_security
+        annotations:
+          summary: "Unauthorized data access attempt"
+          description: "User {{ $labels.user }} attempted to access {{ $labels.resource }}"
+
+      - alert: SensitiveDataExposure
+        expr: sensitive_data_in_logs > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: data_security
+        annotations:
+          summary: "Sensitive data detected in logs"
+          description: "{{ $labels.data_type }} found in {{ $labels.log_file }}"
+          action: "Sanitize logs immediately"
+
+      # Network Security
+      - alert: SuspiciousNetworkConnection
+        expr: suspicious_connections_total > 0
+        for: 1m
+        labels:
+          severity: high
+          category: network_security
+        annotations:
+          summary: "Suspicious network connection detected"
+          description: "Connection to {{ $labels.destination }} on port {{ $labels.port }}"
+
+      - alert: TailscaleUnauthorizedNode
+        expr: tailscale_unauthorized_node_attempts > 0
+        for: 1m
+        labels:
+          severity: high
+          category: network_security
+        annotations:
+          summary: "Unauthorized Tailscale node connection attempt"
+          description: "Node {{ $labels.node_id }} attempted unauthorized connection"
+
+      - alert: DNSTunneling
+        expr: dns_query_size_bytes > 512
+        for: 5m
+        labels:
+          severity: high
+          category: network_security
+        annotations:
+          summary: "Potential DNS tunneling detected"
+          description: "Large DNS queries detected ({{ $value }} bytes)"
+
+      # System Integrity
+      - alert: FileIntegrityViolation
+        expr: file_integrity_violations > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: integrity
+        annotations:
+          summary: "File integrity violation detected"
+          description: "File {{ $labels.file_path }} has been modified unexpectedly"
+          action: "Investigate modification and restore from backup if needed"
+
+      - alert: KernelModuleLoaded
+        expr: unexpected_kernel_module_loaded > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: integrity
+        annotations:
+          summary: "Unexpected kernel module loaded"
+          description: "Module {{ $labels.module_name }} loaded"
+          action: "Potential rootkit - investigate immediately"
+
+      - alert: SELinuxViolation
+        expr: increase(selinux_violations_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          category: integrity
+        annotations:
+          summary: "Multiple SELinux/AppArmor violations"
+          description: "{{ $value }} violations in 5 minutes"
+
+      # Secrets Management
+      - alert: SecretExpirationWarning
+        expr: (secret_expiry_timestamp - time()) < 7 * 86400
+        for: 1h
+        labels:
+          severity: warning
+          category: secrets
+        annotations:
+          summary: "Secret expiring soon"
+          description: "Secret {{ $labels.secret_name }} expires in {{ $value | humanizeDuration }}"
+
+      - alert: VaultSealedUnexpectedly
+        expr: vault_sealed == 1
+        for: 1m
+        labels:
+          severity: critical
+          category: secrets
+        annotations:
+          summary: "Vault has been sealed unexpectedly"
+          description: "HashiCorp Vault is sealed and secrets are inaccessible"
+          action: "Unseal Vault immediately following security procedures"
+
+      - alert: SecretAccessAnomaly
+        expr: |
+          rate(vault_secret_access_total[5m]) >
+          avg_over_time(vault_secret_access_total[1h]) * 3
+        for: 5m
+        labels:
+          severity: warning
+          category: secrets
+        annotations:
+          summary: "Unusual secret access pattern"
+          description: "3x normal secret access rate detected"
+
+  - name: performance_security
+    interval: 30s
+    rules:
+      - alert: HighMemoryUsageInSandbox
+        expr: |
+          container_memory_usage_bytes{container="ai-executor"} /
+          container_spec_memory_limit_bytes{container="ai-executor"} > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          category: resource_security
+        annotations:
+          summary: "AI executor approaching memory limit"
+          description: "Memory usage at {{ $value | humanizePercentage }}"
+
+      - alert: CPUThrottlingInSecureContainer
+        expr: |
+          rate(container_cpu_throttled_seconds_total{container=~".*secure.*"}[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          category: resource_security
+        annotations:
+          summary: "Secure container being CPU throttled"
+          description: "Container {{ $labels.container }} throttled {{ $value }}s"
+
+      - alert: DiskSpaceExhaustion
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/var/log/ai-audit"} /
+           node_filesystem_size_bytes{mountpoint="/var/log/ai-audit"}) < 0.1
+        for: 5m
+        labels:
+          severity: high
+          category: resource_security
+        annotations:
+          summary: "Audit log disk space critical"
+          description: "Only {{ $value | humanizePercentage }} space remaining"
+          action: "Archive old logs or increase disk space"
+
+  - name: compliance
+    interval: 60s
+    rules:
+      - alert: AuditLogGap
+        expr: |
+          time() - audit_log_last_written_timestamp > 300
+        for: 5m
+        labels:
+          severity: high
+          category: compliance
+        annotations:
+          summary: "Audit logging has stopped"
+          description: "No audit logs written for {{ $value | humanizeDuration }}"
+          action: "Investigate audit system immediately"
+
+      - alert: BackupFailure
+        expr: backup_last_success_timestamp < (time() - 86400)
+        for: 1h
+        labels:
+          severity: high
+          category: compliance
+        annotations:
+          summary: "Backup has not run successfully"
+          description: "Last successful backup was {{ $value | humanizeDuration }} ago"
+
+      - alert: ComplianceViolation
+        expr: compliance_violations_total > 0
+        for: 1m
+        labels:
+          severity: high
+          category: compliance
+        annotations:
+          summary: "Compliance violation detected"
+          description: "{{ $labels.regulation }} violation: {{ $labels.violation_type }}"
+
+      - alert: EncryptionDisabled
+        expr: encryption_enabled == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: compliance
+        annotations:
+          summary: "Encryption has been disabled"
+          description: "Encryption disabled for {{ $labels.service }}"
+          action: "Re-enable encryption immediately"

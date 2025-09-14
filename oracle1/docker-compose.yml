@@ -1,0 +1,296 @@
+version: '3.9'
+
+networks:
+  agentic_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/24
+  tailscale_net:
+    external: true
+    name: tailscale
+
+volumes:
+  n8n_data:
+  redis_data:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
+  qdrant_replica:
+  kong_data:
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-agentic}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - POSTGRES_DB=${POSTGRES_DB:-agentic_db}
+      - POSTGRES_MULTIPLE_DATABASES=n8n,langgraph,kong
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    networks:
+      - agentic_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentic}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Redis Cache & Queue
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-changeme}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - agentic_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # n8n Automation Platform
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    environment:
+      - N8N_HOST=${N8N_HOST:-oracle1.tail.net}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://${N8N_HOST:-oracle1.tail.net}:5678/
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-changeme}
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-agentic}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - EXECUTIONS_DATA_SAVE_ON_PROGRESS=true
+      - N8N_DIAGNOSTICS_ENABLED=false
+    volumes:
+      - n8n_data:/home/node/.n8n
+    ports:
+      - "5678:5678"
+    networks:
+      - agentic_net
+      - tailscale_net
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  # LangGraph Orchestration API
+  langgraph:
+    build:
+      context: ./langgraph
+      dockerfile: Dockerfile
+    container_name: langgraph-api
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-agentic}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/langgraph
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - VLLM_BASE_URL=http://100.64.1.1:8000/v1
+      - QDRANT_URL=http://qdrant-replica:6333
+      - EMBEDDING_SERVICE_URL=http://100.64.1.1:8001
+      - LOG_LEVEL=INFO
+      - MAX_WORKERS=4
+      - API_KEY=${LANGGRAPH_API_KEY:-changeme}
+    ports:
+      - "8080:8080"
+    networks:
+      - agentic_net
+      - tailscale_net
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  # Kong API Gateway
+  kong:
+    image: kong:3.4-alpine
+    container_name: kong
+    environment:
+      - KONG_DATABASE=postgres
+      - KONG_PG_HOST=postgres
+      - KONG_PG_PORT=5432
+      - KONG_PG_DATABASE=kong
+      - KONG_PG_USER=${POSTGRES_USER:-agentic}
+      - KONG_PG_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - KONG_PROXY_ACCESS_LOG=/dev/stdout
+      - KONG_ADMIN_ACCESS_LOG=/dev/stdout
+      - KONG_PROXY_ERROR_LOG=/dev/stderr
+      - KONG_ADMIN_ERROR_LOG=/dev/stderr
+      - KONG_ADMIN_LISTEN=0.0.0.0:8001
+      - KONG_PROXY_LISTEN=0.0.0.0:8000, 0.0.0.0:8443 ssl
+      - KONG_PLUGINS=bundled,prometheus
+    volumes:
+      - kong_data:/usr/local/kong
+      - ./kong/plugins:/usr/local/share/lua/5.1/kong/plugins
+    ports:
+      - "8000:8000"
+      - "8443:8443"
+      - "8001:8001"
+    networks:
+      - agentic_net
+      - tailscale_net
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # Claude API Proxy
+  claude-proxy:
+    build:
+      context: ./claude-proxy
+      dockerfile: Dockerfile
+    container_name: claude-proxy
+    environment:
+      - ANTHROPIC_API_KEY=${CLAUDE_API_KEY}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379
+      - CACHE_TTL=86400
+      - MAX_RETRIES=3
+      - RATE_LIMIT_PER_MINUTE=60
+      - LOG_LEVEL=INFO
+    ports:
+      - "8081:8081"
+    networks:
+      - agentic_net
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Qdrant Replica
+  qdrant-replica:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-replica
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+      - QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage
+      - QDRANT__TELEMETRY_DISABLED=true
+      - QDRANT__CLUSTER__ENABLED=true
+      - QDRANT__CLUSTER__P2P__PORT=6335
+      - QDRANT__CLUSTER__CONSENSUS__TICK_PERIOD_MS=100
+    volumes:
+      - qdrant_replica:/qdrant/storage
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    networks:
+      - agentic_net
+      - tailscale_net
+    restart: unless-stopped
+
+  # Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    networks:
+      - agentic_net
+      - tailscale_net
+    restart: unless-stopped
+
+  # Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-changeme}
+      - GF_INSTALL_PLUGINS=redis-datasource,postgres-datasource
+      - GF_SERVER_ROOT_URL=https://${N8N_HOST:-oracle1.tail.net}:3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    ports:
+      - "3000:3000"
+    networks:
+      - agentic_net
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # Node Exporter
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    ports:
+      - "9100:9100"
+    networks:
+      - agentic_net
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    restart: unless-stopped
+
+  # Tailscale Sidecar
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale-oracle1
+    hostname: oracle1
+    environment:
+      - TS_AUTHKEY=${TAILSCALE_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+      - TS_ROUTES=172.21.0.0/24
+    volumes:
+      - ./tailscale:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    networks:
+      - tailscale_net
+      - agentic_net
+    restart: unless-stopped
+
+  # Backup Service
+  restic:
+    image: restic/restic:latest
+    container_name: backup-service
+    environment:
+      - RESTIC_REPOSITORY=${BACKUP_REPO:-s3:s3.amazonaws.com/bucket/oracle1}
+      - RESTIC_PASSWORD=${BACKUP_PASSWORD:-changeme}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    volumes:
+      - postgres_data:/data/postgres:ro
+      - redis_data:/data/redis:ro
+      - n8n_data:/data/n8n:ro
+      - qdrant_replica:/data/qdrant:ro
+    networks:
+      - agentic_net
+    command: ["backup", "/data", "--tag", "oracle1-daily"]
+    restart: "no"

@@ -1,0 +1,58 @@
+{
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["tag:orchestrator"],
+      "dst": ["tag:compute:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:compute"],
+      "dst": ["tag:orchestrator:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:monitoring"],
+      "dst": ["*:9100", "*:9090", "*:9835"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:admin"],
+      "dst": ["*:*"]
+    }
+  ],
+  "tagOwners": {
+    "tag:orchestrator": ["autogroup:admin"],
+    "tag:compute": ["autogroup:admin"],
+    "tag:monitoring": ["autogroup:admin"],
+    "tag:admin": ["autogroup:admin"]
+  },
+  "hosts": {
+    "thanos": "100.64.1.1",
+    "oracle1": "100.64.1.2"
+  },
+  "nodeAttrs": [
+    {
+      "target": ["tag:compute"],
+      "attr": ["funnel"]
+    }
+  ],
+  "ssh": [
+    {
+      "action": "accept",
+      "src": ["tag:admin"],
+      "dst": ["tag:orchestrator", "tag:compute"],
+      "users": ["autogroup:nonroot", "root"]
+    }
+  ],
+  "tests": [
+    {
+      "src": "tag:orchestrator",
+      "accept": ["tag:compute:8000", "tag:compute:6333"]
+    },
+    {
+      "src": "tag:monitoring",
+      "accept": ["tag:compute:9100", "tag:orchestrator:9100"]
+    }
+  ]
+}

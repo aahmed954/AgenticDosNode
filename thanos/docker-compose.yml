@@ -1,0 +1,248 @@
+version: '3.9'
+
+networks:
+  agentic_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+  tailscale_net:
+    external: true
+    name: tailscale
+
+volumes:
+  qdrant_storage:
+  model_cache:
+  code_sandbox:
+  prometheus_data:
+
+services:
+  # Core GPU Services
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-server
+    runtime: nvidia
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - MODEL_NAME=${VLLM_MODEL:-mistralai/Mistral-7B-Instruct-v0.2}
+      - TENSOR_PARALLEL_SIZE=1
+      - GPU_MEMORY_UTILIZATION=0.8
+      - MAX_MODEL_LEN=8192
+      - DOWNLOAD_DIR=/models
+    volumes:
+      - model_cache:/models
+      - ./config/vllm:/config
+    ports:
+      - "8000:8000"
+    networks:
+      - agentic_net
+      - tailscale_net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Vector Database (Primary)
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-primary
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+      - QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage
+      - QDRANT__STORAGE__SNAPSHOTS_PATH=/qdrant/snapshots
+      - QDRANT__TELEMETRY_DISABLED=true
+      - QDRANT__SERVICE__ENABLE_TLS=false
+    volumes:
+      - qdrant_storage:/qdrant/storage
+      - ./backups/qdrant:/qdrant/snapshots
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    networks:
+      - agentic_net
+      - tailscale_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Embedding Service
+  embedding-service:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.2
+    container_name: embedding-service
+    runtime: nvidia
+    environment:
+      - MODEL_ID=BAAI/bge-large-en-v1.5
+      - MAX_BATCH_TOKENS=16384
+      - MAX_CLIENT_BATCH_SIZE=32
+      - CUDA_VISIBLE_DEVICES=0
+    volumes:
+      - model_cache:/data
+    ports:
+      - "8001:80"
+    networks:
+      - agentic_net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Whisper Service for Speech-to-Text
+  whisper:
+    image: onerahmet/openai-whisper-asr-webservice:latest-gpu
+    container_name: whisper-service
+    runtime: nvidia
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - ASR_MODEL=base
+      - ASR_ENGINE=openai_whisper
+    ports:
+      - "8002:9000"
+    networks:
+      - agentic_net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Code Interpreter Sandbox
+  code-sandbox:
+    image: codercom/code-server:latest
+    container_name: code-sandbox
+    environment:
+      - PASSWORD=${CODE_SERVER_PASSWORD:-changeme}
+      - DOCKER_USER=coder
+    volumes:
+      - code_sandbox:/home/coder
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "8004:8080"
+    networks:
+      - agentic_net
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    cap_add:
+      - SYS_PTRACE
+    restart: unless-stopped
+
+  # ComfyUI for Image Generation
+  comfyui:
+    image: yanwk/comfyui-boot:latest
+    container_name: comfyui
+    runtime: nvidia
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - CLI_ARGS=--listen 0.0.0.0 --port 8188
+    volumes:
+      - ./comfyui/models:/root/ComfyUI/models
+      - ./comfyui/input:/root/ComfyUI/input
+      - ./comfyui/output:/root/ComfyUI/output
+    ports:
+      - "8003:8188"
+    networks:
+      - agentic_net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Local Monitoring
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    ports:
+      - "9100:9100"
+    networks:
+      - agentic_net
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    restart: unless-stopped
+
+  # NVIDIA GPU Exporter
+  nvidia-exporter:
+    image: utkuozdemir/nvidia_gpu_exporter:latest
+    container_name: nvidia-exporter
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    ports:
+      - "9835:9835"
+    networks:
+      - agentic_net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Backup Service
+  restic:
+    image: restic/restic:latest
+    container_name: backup-service
+    environment:
+      - RESTIC_REPOSITORY=${BACKUP_REPO:-/backups}
+      - RESTIC_PASSWORD=${BACKUP_PASSWORD:-changeme}
+    volumes:
+      - qdrant_storage:/data/qdrant:ro
+      - model_cache:/data/models:ro
+      - ./backups:/backups
+    networks:
+      - agentic_net
+    command: ["backup", "/data", "--tag", "thanos-daily"]
+    restart: "no"
+
+  # Tailscale Sidecar
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale-thanos
+    hostname: thanos
+    environment:
+      - TS_AUTHKEY=${TAILSCALE_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+      - TS_ROUTES=172.20.0.0/24
+    volumes:
+      - ./tailscale:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    networks:
+      - tailscale_net
+      - agentic_net
+    restart: unless-stopped
