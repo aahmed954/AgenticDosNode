@@ -1,0 +1,222 @@
+version: '3.9'
+
+networks:
+  agentic_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/24
+  tailscale_net:
+    external: true
+    name: tailscale
+
+volumes:
+  n8n_data:
+  redis_data:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
+  qdrant_replica:
+
+services:
+  # PostgreSQL Database (ARM64 compatible)
+  postgres:
+    image: postgres:16-alpine
+    container_name: oracle1-postgres
+    platform: linux/arm64
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-agentic}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-agentic123!}
+      - POSTGRES_DB=${POSTGRES_DB:-agentic_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    networks:
+      - agentic_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentic}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Redis Cache & Queue (ARM64 compatible)
+  redis:
+    image: redis:7-alpine
+    container_name: oracle1-redis
+    platform: linux/arm64
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis123!}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - agentic_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-redis123!}", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # n8n Automation Platform (ARM64 compatible)
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: oracle1-n8n
+    platform: linux/arm64
+    environment:
+      - N8N_HOST=100.96.197.84
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://100.96.197.84:5678/
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-n8n_encryption_key_123}
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-agentic}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-agentic123!}
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - EXECUTIONS_DATA_SAVE_ON_PROGRESS=true
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-n8nadmin123!}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    ports:
+      - "5678:5678"
+    networks:
+      - agentic_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Qdrant Vector Database Replica (ARM64 compatible)
+  qdrant-replica:
+    image: qdrant/qdrant:latest
+    container_name: oracle1-qdrant
+    platform: linux/arm64
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+      - QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage
+      - QDRANT__TELEMETRY_DISABLED=true
+    volumes:
+      - qdrant_replica:/qdrant/storage
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    networks:
+      - agentic_net
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Prometheus Monitoring (ARM64 compatible)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: oracle1-prometheus
+    platform: linux/arm64
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    ports:
+      - "9090:9090"
+    networks:
+      - agentic_net
+    restart: unless-stopped
+
+  # Grafana Dashboard (ARM64 compatible)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: oracle1-grafana
+    platform: linux/arm64
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-grafana123!}
+      - GF_INSTALL_PLUGINS=redis-datasource,grafana-postgresql-datasource
+      - GF_SERVER_ROOT_URL=http://100.96.197.84:3000
+      - GF_SERVER_SERVE_FROM_SUB_PATH=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - agentic_net
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # Node Exporter for system metrics (ARM64 compatible)
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: oracle1-node-exporter
+    platform: linux/arm64
+    ports:
+      - "9100:9100"
+    networks:
+      - agentic_net
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    restart: unless-stopped
+
+  # Process Exporter for detailed process monitoring (ARM64 compatible)
+  process-exporter:
+    image: ncabatoff/process-exporter:latest
+    container_name: oracle1-process-exporter
+    platform: linux/arm64
+    ports:
+      - "9256:9256"
+    networks:
+      - agentic_net
+    volumes:
+      - /proc:/host/proc:ro
+      - ./process-exporter:/config:ro
+    command:
+      - '--procfs=/host/proc'
+      - '--config.path=/config/process-exporter.yml'
+    restart: unless-stopped
+
+  # cAdvisor for container metrics (ARM64 compatible)
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: oracle1-cadvisor
+    platform: linux/arm64
+    ports:
+      - "8081:8080"
+    networks:
+      - agentic_net
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    restart: unless-stopped

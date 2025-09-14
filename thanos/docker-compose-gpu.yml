@@ -1,0 +1,197 @@
+services:
+  # vLLM GPU-accelerated inference server
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: thanos-vllm
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - HF_HOME=/root/.cache/huggingface
+      - VLLM_USE_MODELSCOPE=false
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - VLLM_LOGGING_LEVEL=INFO
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - /home/starlord/.cache/huggingface:/root/.cache/huggingface
+      - ./vllm-models:/models
+      - ./vllm-logs:/logs
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    command: [
+      "--model", "microsoft/Phi-3.5-mini-instruct",
+      "--served-model-name", "phi-3.5-mini",
+      "--host", "0.0.0.0",
+      "--port", "8000",
+      "--max-model-len", "8192",
+      "--gpu-memory-utilization", "0.8",
+      "--enforce-eager",
+      "--disable-log-stats",
+      "--trust-remote-code"
+    ]
+
+  # Text embedding service
+  embedding-service:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.2
+    container_name: thanos-embeddings
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - /home/starlord/.cache/huggingface:/data
+    ports:
+      - "8001:80"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    command: [
+      "--model-id", "sentence-transformers/all-MiniLM-L6-v2",
+      "--port", "80",
+      "--max-concurrent-requests", "512",
+      "--max-batch-tokens", "16384",
+      "--hostname", "0.0.0.0"
+    ]
+
+  # ComfyUI for image generation (GPU-accelerated)
+  comfyui:
+    image: ghcr.io/ai-dock/comfyui:pytorch-2.1.2-py3.10-cuda-11.8-runtime-22.04
+    container_name: thanos-comfyui
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - COMFYUI_PORT_HOST=8188
+      - COMFYUI_FLAGS=--listen 0.0.0.0 --port 8188
+    volumes:
+      - /home/starlord/comfyui:/workspace
+      - /home/starlord/.cache/huggingface:/workspace/models/huggingface
+    ports:
+      - "8188:8188"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # GPU metrics exporter
+  nvidia-exporter:
+    image: mindprince/nvidia_gpu_prometheus_exporter:0.1
+    container_name: thanos-gpu-exporter
+    ports:
+      - "9445:9445"
+    volumes:
+      - /usr/lib/nvidia:/usr/lib/nvidia:ro
+      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    restart: unless-stopped
+
+  # Advanced system monitoring
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: thanos-node-exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+      - '--collector.systemd'
+      - '--collector.processes'
+    restart: unless-stopped
+
+  # Container monitoring
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: thanos-cadvisor
+    ports:
+      - "8082:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    restart: unless-stopped
+
+  # Redis for caching and queues
+  redis:
+    image: redis:7-alpine
+    container_name: thanos-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-thanos123!}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6380:6379"
+    restart: unless-stopped
+
+  # LangGraph orchestration service
+  langgraph:
+    build:
+      context: ./langgraph
+      dockerfile: Dockerfile
+    container_name: thanos-langgraph
+    environment:
+      - DATABASE_URL=postgresql://agentic:agentic123!@100.96.197.84:5432/langgraph
+      - REDIS_URL=redis://:thanos123!@redis:6379
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - VLLM_BASE_URL=http://localhost:8000/v1
+      - QDRANT_URL=http://100.96.197.84:6333
+      - EMBEDDING_SERVICE_URL=http://localhost:8001
+      - LOG_LEVEL=INFO
+      - MAX_WORKERS=8
+      - API_KEY=${LANGGRAPH_API_KEY:-thanos_api_key}
+    ports:
+      - "8002:8080"
+    depends_on:
+      - redis
+      - vllm
+      - embedding-service
+    restart: unless-stopped
+
+  # Prometheus for monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: thanos-prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+      - '--web.listen-address=0.0.0.0:9091'
+    ports:
+      - "9091:9091"
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  prometheus_data:

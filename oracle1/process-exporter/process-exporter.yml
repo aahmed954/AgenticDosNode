@@ -1,0 +1,33 @@
+# Process Exporter configuration for Oracle1 AgenticDosNode
+process_names:
+  - name: "{{.Comm}}"
+    cmdline:
+    - '.+'
+
+  - name: "docker"
+    cmdline:
+    - 'docker'
+
+  - name: "postgres"
+    cmdline:
+    - 'postgres'
+
+  - name: "redis"
+    cmdline:
+    - 'redis'
+
+  - name: "node"
+    cmdline:
+    - 'node'
+
+  - name: "kong"
+    cmdline:
+    - 'kong'
+
+  - name: "prometheus"
+    cmdline:
+    - 'prometheus'
+
+  - name: "grafana"
+    cmdline:
+    - 'grafana'

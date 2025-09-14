@@ -1,4 +1,5 @@
-# Docker Compose version specification is obsolete and should be removed
+# Docker Compose configuration for Oracle1 AgenticDosNode
+# ARM64 optimized version with proper dependency management
 
 networks:
   agentic_net:
@@ -20,11 +21,11 @@ volumes:
   kong_data:
 
 services:
-  # PostgreSQL Database
+  # PostgreSQL Database (ARM64 compatible)
   postgres:
-    image: postgres:15-alpine
+    image: postgres:16-alpine
     platform: linux/arm64
-    container_name: postgres
+    container_name: oracle1-postgres
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-agentic}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
@@ -32,7 +33,7 @@ services:
       - POSTGRES_MULTIPLE_DATABASES=n8n,langgraph,kong
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init:/docker-entrypoint-initdb.d
+      - ./init-scripts:/docker-entrypoint-initdb.d
     ports:
       - "5432:5432"
     networks:
@@ -42,13 +43,14 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
     restart: unless-stopped
 
-  # Redis Cache & Queue
+  # Redis Cache & Queue (ARM64 compatible)
   redis:
     image: redis:7-alpine
     platform: linux/arm64
-    container_name: redis
+    container_name: oracle1-redis
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-changeme}
     volumes:
       - redis_data:/data
@@ -57,22 +59,22 @@ services:
     networks:
       - agentic_net
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-changeme}", "ping"]
       interval: 30s
       timeout: 10s
       retries: 3
     restart: unless-stopped
 
-  # n8n Automation Platform
+  # n8n Automation Platform (ARM64 compatible)
   n8n:
     image: n8nio/n8n:latest
     platform: linux/arm64
-    container_name: n8n
+    container_name: oracle1-n8n
     environment:
-      - N8N_HOST=${N8N_HOST:-oracle1.tail.net}
+      - N8N_HOST=${NODE_IP:-100.96.197.84}
       - N8N_PORT=5678
-      - N8N_PROTOCOL=https
-      - WEBHOOK_URL=https://${N8N_HOST:-oracle1.tail.net}:5678/
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://${NODE_IP:-100.96.197.84}:5678/
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-changeme}
       - DB_TYPE=postgresdb
       - DB_POSTGRESDB_HOST=postgres
@@ -84,6 +86,9 @@ services:
       - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
       - EXECUTIONS_DATA_SAVE_ON_PROGRESS=true
       - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-n8nadmin123!}
     volumes:
       - n8n_data:/home/node/.n8n
     ports:
@@ -92,46 +97,17 @@ services:
       - agentic_net
       - tailscale_net
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
-  # LangGraph Orchestration API
-  langgraph:
-    build:
-      context: ./langgraph
-      dockerfile: Dockerfile
-      platforms:
-        - linux/arm64
-    platform: linux/arm64
-    container_name: langgraph-api
-    environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-agentic}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/langgraph
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379
-      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - VLLM_BASE_URL=http://100.64.1.1:8000/v1
-      - QDRANT_URL=http://qdrant-replica:6333
-      - EMBEDDING_SERVICE_URL=http://100.64.1.1:8001
-      - LOG_LEVEL=INFO
-      - MAX_WORKERS=4
-      - API_KEY=${LANGGRAPH_API_KEY:-changeme}
-    ports:
-      - "8080:8080"
-    networks:
-      - agentic_net
-      - tailscale_net
-    depends_on:
-      - postgres
-      - redis
-    restart: unless-stopped
-
-  # Kong API Gateway
-  # Note: Alpine images discontinued since Kong 3.4, using Ubuntu-based image for ARM64
+  # Kong API Gateway (ARM64 compatible)
   kong:
-    image: kong:3.7-ubuntu
+    image: kong:latest
     platform: linux/arm64
-    container_name: kong
+    container_name: oracle1-kong
     environment:
       - KONG_DATABASE=postgres
       - KONG_PG_HOST=postgres
@@ -145,10 +121,10 @@ services:
       - KONG_ADMIN_ERROR_LOG=/dev/stderr
       - KONG_ADMIN_LISTEN=0.0.0.0:8001
       - KONG_PROXY_LISTEN=0.0.0.0:8000, 0.0.0.0:8443 ssl
-      - KONG_PLUGINS=bundled,prometheus
+      - KONG_PLUGINS=bundled
+      - KONG_NGINX_WORKER_PROCESSES=2
     volumes:
       - kong_data:/usr/local/kong
-      - ./kong/plugins:/usr/local/share/lua/5.1/kong/plugins
     ports:
       - "8000:8000"
       - "8443:8443"
@@ -157,47 +133,27 @@ services:
       - agentic_net
       - tailscale_net
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
-  # Claude API Proxy
-  claude-proxy:
-    build:
-      context: ./claude-proxy
-      dockerfile: Dockerfile
-      platforms:
-        - linux/arm64
-    platform: linux/arm64
-    container_name: claude-proxy
-    environment:
-      - ANTHROPIC_API_KEY=${CLAUDE_API_KEY}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379
-      - CACHE_TTL=86400
-      - MAX_RETRIES=3
-      - RATE_LIMIT_PER_MINUTE=60
-      - LOG_LEVEL=INFO
-    ports:
-      - "8081:8081"
-    networks:
-      - agentic_net
-    depends_on:
-      - redis
-    restart: unless-stopped
-
-  # Qdrant Replica
+  # Qdrant Vector Database Replica (ARM64 compatible)
   qdrant-replica:
     image: qdrant/qdrant:latest
     platform: linux/arm64
-    container_name: qdrant-replica
+    container_name: oracle1-qdrant
     environment:
       - QDRANT__SERVICE__HTTP_PORT=6333
       - QDRANT__SERVICE__GRPC_PORT=6334
       - QDRANT__LOG_LEVEL=INFO
       - QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage
       - QDRANT__TELEMETRY_DISABLED=true
-      - QDRANT__CLUSTER__ENABLED=true
-      - QDRANT__CLUSTER__P2P__PORT=6335
-      - QDRANT__CLUSTER__CONSENSUS__TICK_PERIOD_MS=100
     volumes:
       - qdrant_replica:/qdrant/storage
     ports:
@@ -206,15 +162,20 @@ services:
     networks:
       - agentic_net
       - tailscale_net
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped
 
-  # Prometheus
+  # Prometheus Monitoring (ARM64 compatible)
   prometheus:
     image: prom/prometheus:latest
     platform: linux/arm64
-    container_name: prometheus
+    container_name: oracle1-prometheus
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -222,6 +183,7 @@ services:
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
       - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
     ports:
       - "9090:9090"
     networks:
@@ -229,33 +191,33 @@ services:
       - tailscale_net
     restart: unless-stopped
 
-  # Grafana
+  # Grafana Dashboard (ARM64 compatible)
   grafana:
     image: grafana/grafana:latest
     platform: linux/arm64
-    container_name: grafana
+    container_name: oracle1-grafana
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-changeme}
-      - GF_INSTALL_PLUGINS=redis-datasource,postgres-datasource
-      - GF_SERVER_ROOT_URL=https://${N8N_HOST:-oracle1.tail.net}:3000
+      - GF_INSTALL_PLUGINS=redis-datasource,grafana-postgresql-datasource
+      - GF_SERVER_ROOT_URL=http://${NODE_IP:-100.96.197.84}:3000
+      - GF_SERVER_SERVE_FROM_SUB_PATH=false
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning
-      - ./grafana/dashboards:/var/lib/grafana/dashboards
     ports:
       - "3000:3000"
     networks:
       - agentic_net
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_started
     restart: unless-stopped
 
-  # Node Exporter
+  # Node Exporter for system metrics (ARM64 compatible)
   node-exporter:
     image: prom/node-exporter:latest
     platform: linux/arm64
-    container_name: node-exporter
+    container_name: oracle1-node-exporter
     ports:
       - "9100:9100"
     networks:
@@ -270,11 +232,48 @@ services:
       - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
     restart: unless-stopped
 
-  # Tailscale Sidecar
+  # Process Exporter for detailed process monitoring (ARM64 compatible)
+  process-exporter:
+    image: ncabatoff/process-exporter:latest
+    platform: linux/arm64
+    container_name: oracle1-process-exporter
+    ports:
+      - "9256:9256"
+    networks:
+      - agentic_net
+    volumes:
+      - /proc:/host/proc:ro
+      - ./process-exporter:/config:ro
+    command:
+      - '--procfs=/host/proc'
+      - '--config.path=/config/process-exporter.yml'
+    restart: unless-stopped
+
+  # cAdvisor for container metrics (ARM64 compatible)
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    platform: linux/arm64
+    container_name: oracle1-cadvisor
+    ports:
+      - "8082:8080"
+    networks:
+      - agentic_net
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    restart: unless-stopped
+
+  # Tailscale Sidecar (ARM64 compatible)
   tailscale:
     image: tailscale/tailscale:latest
     platform: linux/arm64
-    container_name: tailscale-oracle1
+    container_name: oracle1-tailscale
     hostname: oracle1
     environment:
       - TS_AUTHKEY=${TAILSCALE_AUTHKEY}
@@ -291,24 +290,3 @@ services:
       - tailscale_net
       - agentic_net
     restart: unless-stopped
-
-  # Backup Service
-  # Using instrumentisto/restic for better ARM64 support
-  restic:
-    image: instrumentisto/restic:latest
-    platform: linux/arm64
-    container_name: backup-service
-    environment:
-      - RESTIC_REPOSITORY=${BACKUP_REPO:-s3:s3.amazonaws.com/bucket/oracle1}
-      - RESTIC_PASSWORD=${BACKUP_PASSWORD:-changeme}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-    volumes:
-      - postgres_data:/data/postgres:ro
-      - redis_data:/data/redis:ro
-      - n8n_data:/data/n8n:ro
-      - qdrant_replica:/data/qdrant:ro
-    networks:
-      - agentic_net
-    command: ["backup", "/data", "--tag", "oracle1-daily"]
-    restart: "no"

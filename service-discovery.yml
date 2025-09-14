@@ -1,0 +1,193 @@
+# AgenticDosNode Service Discovery Configuration
+services:
+  # Oracle1 Services (ARM64 - Data & Workflow Processing)
+  oracle1:
+    node_ip: "100.96.197.84"
+    architecture: "aarch64"
+    services:
+      postgres:
+        port: 5432
+        type: "database"
+        status: "healthy"
+        connection: "postgresql://agentic:agentic123!@100.96.197.84:5432"
+
+      redis:
+        port: 6379
+        type: "cache"
+        status: "healthy"
+        connection: "redis://:redis123!@100.96.197.84:6379"
+
+      qdrant:
+        port: 6333
+        type: "vector_db"
+        status: "unhealthy"
+        endpoint: "http://100.96.197.84:6333"
+
+      n8n:
+        port: 5678
+        type: "workflow"
+        status: "healthy"
+        endpoint: "http://100.96.197.84:5678"
+        auth: "basic"
+
+      prometheus:
+        port: 9090
+        type: "monitoring"
+        status: "healthy"
+        endpoint: "http://100.96.197.84:9090"
+
+      grafana:
+        port: 3000
+        type: "dashboard"
+        status: "healthy"
+        endpoint: "http://100.96.197.84:3000"
+
+      node_exporter:
+        port: 9100
+        type: "metrics"
+        status: "healthy"
+        endpoint: "http://100.96.197.84:9100/metrics"
+
+      process_exporter:
+        port: 9256
+        type: "metrics"
+        status: "healthy"
+        endpoint: "http://100.96.197.84:9256/metrics"
+
+      cadvisor:
+        port: 8081
+        type: "metrics"
+        status: "healthy"
+        endpoint: "http://100.96.197.84:8081/metrics"
+
+  # Thanos Services (x86_64 + GPU - AI/ML Processing)
+  thanos:
+    node_ip: "100.122.12.54"
+    architecture: "x86_64"
+    gpu: "NVIDIA RTX 4090"
+    services:
+      vllm:
+        port: 8000
+        type: "llm_inference"
+        status: "starting"
+        endpoint: "http://100.122.12.54:8000/v1"
+        api_compatible: "openai"
+
+      embeddings:
+        port: 8001
+        type: "embedding"
+        status: "starting"
+        endpoint: "http://100.122.12.54:8001"
+
+      comfyui:
+        port: 8188
+        type: "image_generation"
+        status: "pending"
+        endpoint: "http://100.122.12.54:8188"
+
+      langgraph:
+        port: 8002
+        type: "orchestration"
+        status: "pending"
+        endpoint: "http://100.122.12.54:8002"
+
+      redis:
+        port: 6380
+        type: "cache"
+        status: "healthy"
+        connection: "redis://:thanos123!@100.122.12.54:6380"
+
+      prometheus:
+        port: 9091
+        type: "monitoring"
+        status: "healthy"
+        endpoint: "http://100.122.12.54:9091"
+
+      node_exporter:
+        port: 9100
+        type: "metrics"
+        status: "healthy"
+        endpoint: "http://100.122.12.54:9100/metrics"
+
+      cadvisor:
+        port: 8082
+        type: "metrics"
+        status: "healthy"
+        endpoint: "http://100.122.12.54:8082/metrics"
+
+      gpu_exporter:
+        port: 9445
+        type: "metrics"
+        status: "restarting"
+        endpoint: "http://100.122.12.54:9445/metrics"
+
+# Load Balancing Rules
+load_balancing:
+  llm_inference:
+    primary: "thanos.vllm"
+    fallback: null
+
+  embedding:
+    primary: "thanos.embeddings"
+    fallback: null
+
+  vector_search:
+    primary: "oracle1.qdrant"
+    fallback: "thanos.qdrant"  # If we set up replication
+
+  workflow:
+    primary: "oracle1.n8n"
+    fallback: null
+
+  database:
+    primary: "oracle1.postgres"
+    fallback: null
+
+  cache:
+    primary: "oracle1.redis"
+    secondary: "thanos.redis"
+
+  monitoring:
+    oracle1: "oracle1.prometheus"
+    thanos: "thanos.prometheus"
+    aggregated: "oracle1.grafana"
+
+# Health Check Endpoints
+health_checks:
+  oracle1:
+    - "http://100.96.197.84:5432"  # PostgreSQL
+    - "http://100.96.197.84:6379"  # Redis
+    - "http://100.96.197.84:6333"  # Qdrant
+    - "http://100.96.197.84:5678"  # n8n
+    - "http://100.96.197.84:9090/-/healthy"  # Prometheus
+    - "http://100.96.197.84:3000/api/health"  # Grafana
+
+  thanos:
+    - "http://100.122.12.54:8000/health"  # vLLM
+    - "http://100.122.12.54:8001/health"  # Embeddings
+    - "http://100.122.12.54:8002/health"  # LangGraph
+    - "http://100.122.12.54:6380"  # Redis
+    - "http://100.122.12.54:9091/-/healthy"  # Prometheus
+
+# Service Dependencies
+dependencies:
+  n8n:
+    - oracle1.postgres
+    - oracle1.redis
+
+  langgraph:
+    - oracle1.postgres
+    - thanos.redis
+    - thanos.vllm
+    - oracle1.qdrant
+
+  embeddings:
+    - oracle1.qdrant
+
+  monitoring:
+    - oracle1.node_exporter
+    - oracle1.process_exporter
+    - oracle1.cadvisor
+    - thanos.node_exporter
+    - thanos.cadvisor
+    - thanos.gpu_exporter

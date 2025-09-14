@@ -105,7 +105,7 @@ detect_processes() {
     local pids=$(pgrep -f "$pattern" 2>/dev/null || true)
     if [[ -n "$pids" ]]; then
         log "INFO" "Found $description processes:"
-        ps -p $pids -o pid,ppid,cmd --no-headers | while read line; do
+        ps -p "$(echo $pids | xargs | tr ' ' ',')" -o pid,ppid,cmd --no-headers | while read line; do
             log "INFO" "  $line"
         done
         echo "$pids"

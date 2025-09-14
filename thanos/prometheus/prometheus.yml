@@ -1,0 +1,104 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'thanos'
+    datacenter: 'local'
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus-thanos'
+    static_configs:
+      - targets: ['localhost:9091']
+
+  # GPU Metrics
+  - job_name: 'nvidia-gpu-thanos'
+    static_configs:
+      - targets: ['nvidia-exporter:9445']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'thanos-gpu'
+
+  # System Metrics
+  - job_name: 'node-exporter-thanos'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'thanos'
+
+  # Container Metrics
+  - job_name: 'cadvisor-thanos'
+    static_configs:
+      - targets: ['cadvisor:8080']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'thanos-containers'
+
+  # Application Services
+  - job_name: 'vllm-thanos'
+    static_configs:
+      - targets: ['vllm:8000']
+    metrics_path: /metrics
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'thanos-vllm'
+
+  - job_name: 'embedding-service-thanos'
+    static_configs:
+      - targets: ['embedding-service:80']
+    metrics_path: /metrics
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'thanos-embeddings'
+
+  - job_name: 'langgraph-thanos'
+    static_configs:
+      - targets: ['langgraph:8080']
+    metrics_path: /metrics
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'thanos-langgraph'
+
+  # Cross-cluster monitoring via Tailscale
+  - job_name: 'oracle1-prometheus'
+    static_configs:
+      - targets: ['100.96.197.84:9090']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'oracle1'
+
+  - job_name: 'oracle1-services'
+    static_configs:
+      - targets:
+        - '100.96.197.84:9100'  # node-exporter
+        - '100.96.197.84:9256'  # process-exporter
+        - '100.96.197.84:8081'  # cadvisor
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '100\.96\.197\.84:(.+)'
+        target_label: __metrics_path__
+        replacement: '/metrics'
+      - source_labels: [__address__]
+        regex: '100\.96\.197\.84:9100'
+        target_label: job
+        replacement: 'oracle1-node'
+      - source_labels: [__address__]
+        regex: '100\.96\.197\.84:9256'
+        target_label: job
+        replacement: 'oracle1-processes'
+      - source_labels: [__address__]
+        regex: '100\.96\.197\.84:8081'
+        target_label: job
+        replacement: 'oracle1-containers'

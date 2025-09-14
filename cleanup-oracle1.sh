@@ -177,7 +177,7 @@ cleanup_cpu_ai_processes() {
         if [[ -n "$processes" ]]; then
             # Show CPU and memory usage for these processes
             log "INFO" "Resource usage for $pattern processes:"
-            ps -p $processes -o pid,ppid,%cpu,%mem,cmd --no-headers 2>/dev/null | while read line; do
+            ps -p "$(echo $processes | xargs | tr ' ' ',')" -o pid,ppid,%cpu,%mem,cmd --no-headers 2>/dev/null | while read line; do
                 log "INFO" "  $line"
             done
             kill_processes "$processes" "$pattern" false
@@ -189,7 +189,7 @@ cleanup_cpu_ai_processes() {
     local high_cpu_pids=$(ps -eo pid,ppid,%cpu,cmd --no-headers | awk '$3 > 50 {print $1}' 2>/dev/null || true)
     if [[ -n "$high_cpu_pids" ]]; then
         log "WARN" "Found high CPU usage processes:"
-        ps -p $high_cpu_pids -o pid,ppid,%cpu,%mem,cmd --no-headers 2>/dev/null | while read line; do
+        ps -p "$(echo $high_cpu_pids | xargs | tr ' ' ',')" -o pid,ppid,%cpu,%mem,cmd --no-headers 2>/dev/null | while read line; do
             log "WARN" "  $line"
         done
 
